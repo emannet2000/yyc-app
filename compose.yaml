@@ -1,0 +1,14 @@
+services:
+  yyc:
+    build: .
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      YYC_DATA_DIR: /app/data
+    volumes:
+      - yyc-data:/app/data
+    restart: unless-stopped
+volumes:
+  yyc-data:
