@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "YYC Driver",
+    "slug": "yyc-driver",
+    "scheme": "yycdriver",
+    "version": "0.1.0",
+    "plugins": [
+      ["expo-location", {
+        "locationAlwaysAndWhenInUsePermission": "YYC shares your location with the broker and store while you are on an active delivery.",
+        "locationWhenInUsePermission": "YYC shares your location with the broker and store while you are on an active delivery.",
+        "isAndroidBackgroundLocationEnabled": true,
+        "isAndroidForegroundServiceEnabled": true
+      }],
+      "expo-secure-store"
+    ],
+    "ios": { "supportsTablet": false, "infoPlist": { "UIBackgroundModes": ["location"] } },
+    "android": { "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION", "ACCESS_BACKGROUND_LOCATION", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_LOCATION"] }
+  }
+}

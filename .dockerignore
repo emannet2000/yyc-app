@@ -1,6 +1,54 @@
+# Dependencies
 node_modules
-.git
-data
-backups
-.env
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Testing
+coverage
+.nyc_output
 test
+*.test.js
+
+# Local development
+.env
+.env.local
+.env.*.local
+data/
+backups/
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+README.md
+docs/
+.claude/
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+
+# Logs
+logs
+*.log
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
