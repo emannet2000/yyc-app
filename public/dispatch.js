@@ -5,7 +5,7 @@ navs.admin.unshift(['dispatch','route','Live dispatch']);navs.store.splice(2,0,[
 const baseContent=content,baseBooking=booking,baseEnterDemo=enterDemo,baseSwitchRole=switchRole,baseOpenDelivery=openDelivery;
 content=function(){if(page==='dispatch')return dispatchScreen();if(page==='tracking')return storeTracking();if(page==='ontrip')return driverScreen();return baseContent()};
 enterDemo=function(r){role=r;page=r==='admin'?'dispatch':r==='driver'?'ontrip':'dashboard';filter='';query='';render()};
-switchRole=function(r){role=r;page=r==='admin'?'dispatch':r==='driver'?'ontrip':'tracking';$('#overlay').innerHTML='';render();window.scrollTo(0,0);toast('Demo role switched · shared fictional records')};
+switchRole=function(r){return};
 function currentJob(){return shipments.find(s=>s.driver&&!['Delivered','Cancelled'].includes(s.status))}
 function tripState(t){if(t.id!=='T-014')return t.state;return currentJob()?'On delivery':onDuty?'Available':'Off duty'}
 function fresh(t){return t.id==='T-014'?gpsMode==='fresh'&&onDuty:t.fresh}

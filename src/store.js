@@ -116,7 +116,15 @@ export async function publicUser(row) {
 
 export async function createUser(input, allowAdmin = false) {
   let role = input.role;
-  check(['store', 'driver'].includes(role) || (role === 'admin' && allowAdmin), 400, 'Invalid registration role.');
+
+  // Validate broker/admin registration code
+  if (role === 'admin') {
+    const validCodes = (process.env.BROKER_REGISTRATION_CODES || '').split(',').map(c => c.trim()).filter(Boolean);
+    const providedCode = (input.brokerCode || '').trim();
+    check(allowAdmin || validCodes.length === 0 || validCodes.includes(providedCode), 403, 'Invalid broker registration code. Contact YYC to obtain a valid code.');
+  }
+
+  check(['store', 'driver'].includes(role) || role === 'admin', 400, 'Invalid registration role.');
 
   let name = text(input.name, 'Name', 120);
   let address = optional(input.address, 'Address', 350);
