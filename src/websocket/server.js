@@ -1,7 +1,7 @@
 import { Server } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import Redis from 'ioredis';
-import { session, getShipment } from '../store.js';
+import { session, getShipment, hasStorePermission } from '../store.js';
 import { authorizeShipment } from './authorization.js';
 
 /**
@@ -71,11 +71,18 @@ export async function initializeWebSocket(httpServer, options = {}) {
       if (!authenticated) {
         return next(new Error('Invalid or expired session'));
       }
+      // Same rule as the HTTP API: brokers must enrol MFA before receiving any live data.
+      if (authenticated.user.role === 'admin' && !authenticated.user.mfa_enabled && process.env.ADMIN_MFA_OPTIONAL !== 'true') {
+        return next(new Error('MFA enrollment required'));
+      }
 
       // Attach user info to socket
       socket.userId = authenticated.user.id;
       socket.userRole = authenticated.user.role;
       socket.sessionToken = token;
+      // socket.data is visible through fetchSockets() on every instance (Redis adapter).
+      socket.data.sessionToken = token;
+      socket.data.userId = authenticated.user.id;
 
       console.log(`[WebSocket] User ${session.user_id} connected (${socket.id})`);
 
@@ -99,7 +106,7 @@ export async function initializeWebSocket(httpServer, options = {}) {
     // Handle custom events
     socket.on('join:shipment', async (shipmentId, acknowledge) => {
       try {
-        await authorizeShipment(socket.sessionToken, shipmentId, { session, getShipment });
+        await authorizeShipment(socket.sessionToken, shipmentId, { session, getShipment, hasStorePermission });
         await socket.join(`shipment:${shipmentId}`);
         if (typeof acknowledge === 'function') acknowledge({ ok: true });
       } catch {
@@ -131,11 +138,15 @@ export async function initializeWebSocket(httpServer, options = {}) {
  * @param {string} shipmentId - Shipment ID
  * @param {Object} data - Update data
  */
-export function broadcastShipmentUpdate(shipmentId, data) {
+export async function broadcastShipmentUpdate(shipmentId, data) {
   if (!io) {
     console.warn('[WebSocket] Server not initialized');
     return;
   }
+
+  // Access is checked when a socket joins; re-check before each update so a removed
+  // driver or team member stops receiving this shipment.
+  await revalidateShipmentRoom(shipmentId);
 
   io.to(`shipment:${shipmentId}`).emit('shipment:update', {
     shipmentId,
@@ -144,6 +155,62 @@ export function broadcastShipmentUpdate(shipmentId, data) {
   });
 
   console.log(`[WebSocket] Broadcasted shipment:update for ${shipmentId}`);
+}
+
+/**
+ * Remove sockets from a shipment room when their session no longer grants access.
+ * @param {string} shipmentId - Shipment ID
+ */
+export async function revalidateShipmentRoom(shipmentId) {
+  if (!io) return;
+  const room = `shipment:${shipmentId}`;
+  try {
+    const sockets = await io.in(room).fetchSockets();
+    await Promise.all(sockets.map(async socket => {
+      try {
+        await authorizeShipment(socket.data.sessionToken, shipmentId, { session, getShipment, hasStorePermission });
+      } catch {
+        socket.leave(room);
+      }
+    }));
+  } catch (err) {
+    console.warn('[WebSocket] Could not revalidate', room, err.message);
+  }
+}
+
+/**
+ * Disconnect every socket of a user (suspension, password reset, team removal).
+ * The client reconnects and rejoins only the rooms it is still allowed in.
+ * @param {string} userId - User ID
+ */
+export function disconnectUser(userId) {
+  if (!io) return;
+  io.in(`user:${userId}`).disconnectSockets(true);
+}
+
+/**
+ * Disconnect the sockets opened with one session token (logout).
+ * @param {string} token - Session token
+ */
+export async function disconnectSession(token) {
+  if (!io || !token) return;
+  try {
+    const sockets = await io.fetchSockets();
+    for (const socket of sockets) if (socket.data.sessionToken === token) socket.disconnect(true);
+  } catch (err) {
+    console.warn('[WebSocket] Could not disconnect session sockets:', err.message);
+  }
+}
+
+/**
+ * Emit an event to specific users' personal rooms.
+ * @param {string[]} userIds - Recipients
+ * @param {string} event - Event name
+ * @param {Object} data - Event data
+ */
+export function emitToUsers(userIds, event, data = {}) {
+  if (!io || !userIds.length) return;
+  io.to(userIds.map(id => `user:${id}`)).emit(event, { ...data, timestamp: new Date().toISOString() });
 }
 
 /**

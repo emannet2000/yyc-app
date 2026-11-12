@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS shipments (
 CREATE TABLE IF NOT EXISTS audit (
   id SERIAL PRIMARY KEY,
   shipment_id TEXT REFERENCES shipments(id) ON DELETE CASCADE,
-  actor_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  actor_id UUID REFERENCES users(id) ON DELETE RESTRICT, -- NULL = automatic system event
   event TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -181,3 +181,6 @@ CREATE INDEX IF NOT EXISTS idx_gps_recorded ON gps_locations(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_gps_shipment_recorded ON gps_locations(shipment_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notification_tokens_user ON notification_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_notification_tokens_platform ON notification_tokens(platform);
+
+-- Automatic events (expiries, compliance sweeps) have no human actor.
+ALTER TABLE audit ALTER COLUMN actor_id DROP NOT NULL;

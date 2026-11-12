@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: yyc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: yyc_user
+      POSTGRES_PASSWORD: yyc_local_dev_password
+      POSTGRES_DB: yyc_dev
+    volumes:
+      - yyc_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yyc_user -d yyc_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: yyc-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - yyc_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yyc-app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      HOST: 0.0.0.0
+      # Address you open in the browser; used for email links and Stripe return URLs.
+      PUBLIC_ORIGIN: http://localhost:3001
+      DATABASE_URL: postgresql://yyc_user:yyc_local_dev_password@postgres:5432/yyc_dev
+      REDIS_URL: redis://redis:6379
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    command: npm start
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  yyc_postgres_data:
+  yyc_redis_data:

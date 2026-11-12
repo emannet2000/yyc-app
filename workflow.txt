@@ -1,0 +1,1444 @@
+ve finished reading the shipment state machine and the payment routes and am writing up what I found. Every frontend button maps to a real server action, so the bugs are on the server side.
+
+Workflow bugs
+
+High
+
+1. Driver payouts can never be issued. src/server.js:980 checks shipment.status === 'delivered' in lowercase, but the store saves 'Delivered'. Every payout request fails with "Payout can only be created for delivered shipments".
+2. Closing the bidding window opens bidding forever. When the window expires, expireStaleDispatch (src/store.js:419) clears the bids and deletes bidsExpiresAt but leaves the status at Ready to assign. bid (:717) and acceptBid (:740) only block bids when bidsExpiresAt exists and has passed. So once the window "closes", drivers can bid again with no deadline. Also, acceptBid refuses after the deadline, so the broker can't choose among bids once the window ends, and those bids are deleted when the expiry job next runs.
+3. A driver mid-delivery can't be booked for any other day. checkDriverSchedule (src/store.js:555) throws "Driver is currently completing another delivery" for any job of theirs that is In transit, before it looks at dates. A driver on today's run can't bid on, be offered, or accept tomorrow's load.
+4. Without Google Maps, a driver can never take two jobs in one day. The default travelMinutes = 60 (:558) makes 60 + 30 <= 60 always false. A morning job plus an afternoon job is always rejected unless Maps is configured.
+
+Medium
+
+5. A declined or expired bid offer leaves the bid rate in place. acceptBid overwrites s.rate with the driver's bid (:746). If that driver declines (:764) or the offer expires, the shipment goes back to dispatch still carrying that rate instead of the quoted one. The declined driver's bid also stays in s.bids, so it can be accepted again.
+6. Changing a shipment ('change', :903) leaves stale state behind. It doesn't clear bids, bidsExpiresAt, offerExpiresAt, quoteRevisionRequest or rescheduleRequest. Old bids priced for the old cargo can still be accepted after the shipment is re-quoted. An open revision request also blocks the store from requesting a revision of the new quote ("already awaiting review").
+7. Quote expiry has the same leftover-state problem. expireQuote (:600) and the automatic expiry don't close an open quoteRevisionRequest, so that request blocks the next quote's revisions in the same way.
+8. Reschedules accept past dates. requestReschedule (:663) checks the date format but not that the date is in the future, unlike createShipment (:444). approveReschedule doesn't check either.
+9. Drivers can mark their own Stripe onboarding complete. /api/payments/connect/complete (src/server.js:~960) sets stripe_onboarded = true without asking Stripe whether the account can actually receive transfers.
+10. Recording a payout doesn't use the shipment version. src/server.js:1013 rewrites the whole data column from an earlier read, without a transaction and without incrementing version. A claim or note saved at the same moment can be overwritten, and open clients won't see the payout until they refresh.
+
+Low
+
+11. Expiry only runs when someone loads the app. expireStaleDispatch is only called from state() (src/store.js:351), so quotes, offers and bid windows expire only when a user loads state. Nothing runs on a timer.
+12. The payment button can create two c
+
+
+ve finished reading the shipment state machine and the payment routes and am writing up what I found. Every frontend button maps to a real server action, so the bugs are on the server side.
+
+Workflow bugs
+
+High
+
+1. Driver payouts can never be issued. src/server.js:980 checks shipment.status === 'delivered' in lowercase, but the store saves 'Delivered'. Every payout request fails with "Payout can only be created for delivered shipments".
+2. Closing the bidding window opens bidding forever. When the window expires, expireStaleDispatch (src/store.js:419) clears the bids and deletes bidsExpiresAt but leaves the status at Ready to assign. bid (:717) and acceptBid (:740) only block bids when bidsExpiresAt exists and has passed. So once the window "closes", drivers can bid again with no deadline. Also, acceptBid refuses after the deadline, so the broker can't choose among bids once the window ends, and those bids are deleted when the expiry job next runs.
+3. A driver mid-delivery can't be booked for any other day. checkDriverSchedule (src/store.js:555) throws "Driver is currently completing another delivery" for any job of theirs that is In transit, before it looks at dates. A driver on today's run can't bid on, be offered, or accept tomorrow's load.
+4. Without Google Maps, a driver can never take two jobs in one day. The default travelMinutes = 60 (:558) makes 60 + 30 <= 60 always false. A morning job plus an afternoon job is always rejected unless Maps is configured.
+
+Medium
+
+5. A declined or expired bid offer leaves the bid rate in place. acceptBid overwrites s.rate with the driver's bid (:746). If that driver declines (:764) or the offer expires, the shipment goes back to dispatch still carrying that rate instead of the quoted one. The declined driver's bid also stays in s.bids, so it can be accepted again.
+6. Changing a shipment ('change', :903) leaves stale state behind. It doesn't clear bids, bidsExpiresAt, offerExpiresAt, quoteRevisionRequest or rescheduleRequest. Old bids priced for the old cargo can still be accepted after the shipment is re-quoted. An open revision request also blocks the store from requesting a revision of the new quote ("already awaiting review").
+7. Quote expiry has the same leftover-state problem. expireQuote (:600) and the automatic expiry don't close an open quoteRevisionRequest, so that request blocks the next quote's revisions in the same way.
+8. Reschedules accept past dates. requestReschedule (:663) checks the date format but not that the date is in the future, unlike createShipment (:444). approveReschedule doesn't check either.
+9. Drivers can mark their own Stripe onboarding complete. /api/payments/connect/complete (src/server.js:~960) sets stripe_onboarded = true without asking Stripe whether the account can actually receive transfers.
+10. Recording a payout doesn't use the shipment version. src/server.js:1013 rewrites the whole data column from an earlier read, without a transaction and without incrementing version. A claim or note saved at the same moment can be overwritten, and open clients won't see the payout until they refresh.
+
+Low
+
+11. Expiry only runs when someone loads the app. expireStaleDispatch is only called from state() (src/store.js:351), so quotes, offers and bid windows expire only when a user loads state. Nothing runs on a timer.
+12. The payment button can create two c
+
+
+I found 15 more workflow bugs. Two critical problems sit in the account flows: password reset can never succeed, and anyone can sign up as a broker. The rest are mostly dead ends where a shipment, document or driver gets stuck. I haven't changed any code this round.
+
+Critical
+
+1. Password reset can never succeed. The token is stored under the wrong key. redis.setResetToken(token, userId) takes the token first, but src/server.js:~233 calls setResetToken(email, token). The token gets saved under reset_token:<email>, so getResetToken(token) always returns nothing and every reset fails with "Invalid or expired reset token".
+2. The reset link in the email returns a 404. The email links to /reset-password?token=… (src/email/client.js:137), but the static router only serves /, /demo and the portal paths (src/server.js:1244). Even with #1 fixed, users can't reach the reset form.
+3. Anyone can register as a broker on a default install. In createUser (src/store.js:~122), a broker signup is allowed when validCodes.length === 0, which is the case whenever BROKER_REGISTRATION_CODES isn't set. The signup form offers the broker role, and broker accounts skip email verification at login (src/server.js:152). Anyone who sees the signup page gets full broker access.
+
+High
+
+4. Email verification breaks if the email's capitalisation differs. Register stores the code under the lowercased email, but /api/verify-email and /api/resend-code use the email exactly as typed. Typing John@x.com at verification fails, and a resend can store the code under a second key.
+5. Drivers can't connect Stripe, so payouts can never be paid. No frontend calls /api/payments/connect/onboard or /connect/complete. Stripe's return URL is /profile?stripe=success, which returns a 404. The payout check "Driver has not completed Stripe Connect onboarding" therefore always fails.
+6. The broker can't take a job off a driver without throwing away the quote. The only broker actions available for an Assigned job are change, which resets it to Awaiting quote and clears the price, and cancel. If a driver is suspended, deleted or simply doesn't show up, the shipment is stuck unless it's re-quoted or cancelled.
+7. Suspending or deleting an account ignores the work it still has. suspend (src/server.js:~565) and an approved deletion request (:~460) disable drivers who have Offered, Assigned or In-transit jobs, and stores with open shipments. Those shipments get stuck, because eligible() now rejects that driver. The deletion steps also don't run in a transaction, so a failure partway through leaves a half-deleted account.
+
+Medium
+
+8. Driver approval doesn't depend on documents. approve() (src/store.js:~995) doesn't check for an approved licence, insurance or registration. Rejecting or deleting those documents later doesn't revoke dispatch eligibility either.
+9. Documents never actually expire. markExpired in src/storage/documents.js:174 is never called. Expired insurance stays "approved", and the driver keeps getting jobs.
+10. Proof of delivery can be deleted after delivery. The uploader can delete any of their own documents (src/server.js:~722), including pod and receipt files attached to a Delivered shipment that has an open claim.
+11. Proof photo IDs aren't checked. pickup, deliver and completeStop save any photoDocumentId string without checking that the document exists, belongs to the driver or is attached to that shipment.
+12. Approving or rejecting a missing document returns success. approveDocument and rejectDocument return 200 with document: null for an ID that doesn't exist. They will also flip an already-reviewed document with no confirmation.
+
+Low
+
+13. Resending a verification code reveals which emails have accounts. /api/resend-code returns 404 "User not found", unlike /api/request-reset, which hides that.
+14. A password reset doesn't sign the user out elsewhere. updatePassword leaves existing Redis sessions active, so someone already signed in on a compromised device stays signed in.
+15. Unapproved drivers can see the load board. visible() and state() show every Ready-to-assign load to any driver, including unapproved or unverified ones. Contact details are hidden, but routes and cargo are not.
+
+Want me to fix these? I'd start with 1–5, which are small and contained. Item 6 needs a new broker "unassign driver" action, and item 7 needs a decision on what happens to active work when an account is suspended or deleted.
+ string without checking that the document exists, belongs to the driver or is attachedlater doesn't revoke dispatch eligibility either.
+9. Documents never actually expire. markExpired in src/storage/documents.js:174 is never called. Expired insurance stays "approved", and the driver keeps getting jobs.
+10. Proof of delivery can be deleted after delivery. The uploader can delete any of their own documents (src/server.js:~722), including pod and receipt files attached to a Delivered shI found 15 more workflow bugs. Two critical problems sit in the account flows: password reset can never succeed, and anyone can sign up as a broker. The rest are mostly dead ends where a shipment, document or driver gets stuck. I haven't changed any code this round.
+
+Critical
+
+1. Password reset can never succeed. The token is stored under the wrong key. redis.setResetToken(token, userId) takes the token first, but src/server.js:~233 calls setResetToken(email, token). The token gets saved under reset_token:<email>, so getResetToken(token) always returns nothing and every reset fails with "Invalid or expired reset token".
+2. The reset link in the email returns a 404. The email links to /reset-password?token=… (src/email/client.js:137), but the static router only serves /, /demo and the portal paths (src/server.js:1244). Even with #1 fixed, users can't reach the reset form.
+3. Anyone can register as a broker on a default install. In createUser (src/store.js:~122), a broker signup is allowed when validCodes.length === 0, which is the case whenever BROKER_REGISTRATION_CODES isn't set. The signup form offers the broker role, and broker accounts skip email verification at login (src/server.js:152). Anyone who sees the signup page gets full broker access.
+
+High
+
+4. Email verification breaks if the email's capitalisation differs. Register stores the code under the lowercased email, but /api/verify-email and /api/resend-code use the email exactly as typed. Typing John@x.com at verification fails, and a resend can store the code under a second key.
+5. Drivers can't connect Stripe, so payouts can never be paid. No frontend calls /api/payments/connect/onboard or /connect/complete. Stripe's return URL is /profile?stripe=success, which returns a 404. The payout check "Driver has not completed Stripe Connect onboarding" therefore always fails.
+6. The broker can't take a job off a driver without throwing away the quote. The only broker actions available for an Assigned job are change, which resets it to Awaiting quote and clears the price, and cancel. If a driver is suspended, deleted or simply doesn't show up, the shipment is stuck unless it's re-quoted or cancelled.
+7. Suspending or deleting an account ignores the work it still has. suspend (src/server.js:~565) and an approved deletion request (:~460) disable drivers who have Offered, Assigned or In-transit jobs, and stores with open shipments. Those shipments get stuck, because eligible() now rejects that driver. The deletion steps also don't run in a transaction, so a failure partway through leaves a half-deleted account.
+
+Medium
+
+8. Driver approval doesn't depend on documents. approve() (src/store.js:~995) doesn't check for an approved licence, insurance or registration. Rejecting or deleting those documents later doesn't revoke dispatch eligibility either.
+9. Documents never actually expire. markExpired in src/storage/documents.js:174 is never called. Expired insurance stays "approved", and the driver keeps getting jobs.
+10. Proof of delivery can be deleted after delivery. The uploader can delete any of their own documents (src/server.js:~722), including pod and receipt files attached to a Delivered shipment that has an open claim.
+11. Proof photo IDs aren't checked. pickup, deliver and completeStop save any photoDocumentId string without checking that the document exists, belongs to the driver or is attached to that shipment.
+12. Approving or rejecting a missing document returns success. approveDocument and rejectDocument return 200 with document: null for an ID that doesn't exist. They will also flip an already-reviewed document with no confirmation.
+
+Low
+
+13. Resending a verification code reveals which emails have accounts. /api/resend-code returns 404 "User not found", unlike /api/request-reset, which hides that.
+14. A password reset doesn't sign the user out elsewhere. updatePassword leaves existing Redis sessions active, so someone already signed in on a compromised device stays signed in.
+15. Unapproved drivers can see the load board. visible() and state() show every Ready-to-assign load to any driver, including unapproved or unverified ones. Contact details are hidden, but routes and cargo are not.
+
+Want me to fix these? I'd start with 1–5, which are small and contained. Item 6 needs a new broker "unassign driver" action, and item 7 needs a decision on what happens to active work when an account is suspended or deleted.
+ string without checking that the document exists, belongs to the driver or is attachedlater doesn't revoke dispatch eligibility either.
+9. Documents never actually expire. markExpired in src/storage/documents.js:174 is never called. Expired insurance stays "approved", and the driver keeps getting jobs.
+10. Proof of delivery can be deleted after delivery. The uploader can delete any of their own documents (src/server.js:~722), including pod and receipt files attached to a Delivered shipment that has an open claim
+
+
+shell command
+
+All 15 items from the last list were already fixed, so the only thing left to change was the stuck-payout problem I flagged in an earlier round. That's now fixed in src/server.js.
+
+Payout stuck in processing: If a payout attempt hasn't finished after 10 minutes, for example because the server crashed in the middle of the Stripe transfer, the broker can now retry it. The retry has to use the same amount as the first attempt; otherwise the server refuses and says which amount to use. Stripe's duplicate-request protection (its idempotency key) is tied to the shipment and
+❯ fix these all
+
+Everything on both lists is already fixed, and nothing from my earlier notes is still open:
+
+- First list (12 items): fixed. #12 needed no change because Stripe already blocks duplicate payment requests.
+- Second list (15 items): fixed.
+- Stuck processing payouts: fixed in the last round.
+
+So I'm not sure what "these" refers to this time. Here's what I can do next:
+
+1. Look for another round of bugs. The areas I haven't reviewed are MFA, notifications, WebSockets and the /demo prototype.
+2. Review the outside changes to src/server.js. Something besides me edited that file while I was working, and I haven't checked those edits.
+3. Test it for real. Once you've rebuilt with ./start-yyc.sh, I can run the main flows against the running app on port 3001.
+4. Commit the work.
+
+If you're seeing a new error or bug, paste it and I'll fix that.
+
+✻ Baked for 8s · done 6:09 PM✻ Sautéed for 38s · done 6:08 PM
+ommand
+
+I found 12 more workflow bugs. They're mostly about live updates and notifications, plus a few problems in Stripe payment handling and MFA. I haven't changed any code this round.
+
+High
+
+1. Live updates stop working if you log out and sign in as someone else in the same tab. logoutAccount (public/runtime.js) never disconnects the WebSocket. The socket keeps the old session token, so every join:shipment from the new user is checked against a revoked session and rejected. The new user gets no live updates until they reload the page.
+2. Live access is never taken away. Access to a shipment's updates is checked only when the socket joins its room. A driver who is removed or suspended, or a team member who is dropped, keeps receiving that shipment's updates and GPS positions until they disconnect.
+3. Store team members get no live updates or notifications. authorizeShipment (src/websocket/authorization.js) requires shipment.store_id === user.id, so team members are refused. Action notifications also go only to store_id, the owner (src/server.js:596).
+4. Brokers and drivers aren't told about new work.
+   - Creating a shipment sends no live update and no notification (src/server.js:586).
+   - Brokers are never on the recipient list, so they get nothing for a quote accepted, a new bid, an exception, a claim, or a reschedule or revision request.
+   - Drivers can't subscribe to loads that are open for bidding, so new loads never appear live.
+
+   Everyone has to keep refreshing by hand.
+5. A removed driver is never told. Recipients are worked out after the action. After unassignDriver, withdrawAssignment, change, cancel or decline, the departing driver is no longer on the shipment, so they get no notice.
+6. The store gets a notification for every bid. Each bid and withdrawBid sends the store "Status: Ready to assign", by SMS or email if those are enabled, even though stores can't see bids.
+
+Medium
+
+7. Payment status doesn't update live. The Stripe webhook updates payment_status but doesn't increment the shipment's version. It sends a payment:update event, which the frontend never listens for. The store sees "processing" until it reloads.
+8. Out-of-order Stripe events can corrupt payment and payout status.
+   - A payment_failed event that arrives after succeeded changes the shipment to failed.
+   - The webhook doesn't check that the PaymentIntent is the one recorded on the shipment.
+   - The code handles transfer.failed, which isn't a real Stripe event, and ignores transfer.reversed, so a reversed payout still shows as paid.
+9. Brokers are told MFA is required, but it isn't. /api/mfa/status reports mfaEnforced: true for brokers, but they can log in without MFA and are never made to enrol.
+10. MFA codes can be reused. verifyTOTP accepts codes from the current, previous and next 30-second windows and doesn't record which code was last used. A captured code works again for about 90 seconds, at login and when disabling MFA.
+
+Low
+
+11. Opening checkout marks a shipment as "processing" before anyone pays. Creating the PaymentIntent sets payment_status='processing' before the customer enters a card. An abandoned checkout shows "processing" forever.
+12. Job offers and quotes get only a generic message. Drivers and stores get "Status: Offered" or "Status: Quote ready" without the rate, price or destination. Purpose-built helpers (notifyJobOffer, notifyQuoteReady, notifyDeliveryCompleted in src/notifications/manager.js) exist, but nothing calls them.
+
+Want me to fix these? Items 1, 5, 6, 7, 8, 11 and 12 are small and contained. Items 2–4 mean reworking how live updates are subscribed and authorised, and 9–10 change how login works.
+
+✻ Churned for 1m 28s · done 6:11 PM───────────────────────────────────────────────────────────────────────────────────────────
+
+
+I fixed all 12. The 4 unit tests pass, including a new one for store team access, and every file passes a syntax check. As before, the PostgreSQL integration test is skipped without a database, so none of this has run against the real app yet.
+
+Live updates
+1. Logout closes the live connection. The browser and the server both now drop the socket on logout, so the next person to sign in in that tab starts a fresh one.
+2. Live access is checked again, not just once. Before each shipment update, every socket in that shipment's room is re-checked and removed if it no longer has access. Suspension, removal from a store team, password reset and account deletion disconnect that user's sockets. The browser reconnects after two seconds and rejoins only the shipments it's still allowed to see.
+3. Store team members with read access can now subscribe to live updates and get notifications.
+4. New work is announced.
+   - A new request pings brokers and the store's team, and sends each broker a notification.
+   - When a load opens for bidding, drivers' load boards refresh.
+   - Brokers are notified about every action taken by a store or driver.
+5. Payment status updates live. Webhook updates now increment the shipment version and push a refresh. The frontend also listens for payment:update.
+
+Notifications
+5. Removed drivers are told. Recipients now include whoever was on the shipment before the action, not only after it.
+6. Stores no longer hear about bids (or about exceptions being assigned to a broker).
+12. Messages are specific to each person.
+    - Drivers get the route, date and their rate with an offer.
+    - Stores get the quote price, but only if they have billing access, plus pickup and delivery details.
+    - Brokers get the exact event from the audit history.
+
+Payments
+8. Webhooks only update the PaymentIntent recorded on the shipment. A failure event that arrives late can no longer overwrite a successful payment. transfer.failed is replaced by transfer.reversed, which brokers are notified about, and charge.refunded is now handled.
+11. Opening checkout leaves the shipment pending. It only changes when Stripe reports payment_intent.processing, succeeded or failed.
+
+I also fixed the payout check I mentioned while working: getShipment now returns payout_transfer_id, so "Payout already exists" works.
+
+MFA
+9. Brokers must set up an authenticator. Until they do, every API request except MFA setup and logout returns 403, and the app shows a "Set up two-step sign-in" screen.
+10. Each authenticator code works only once. The used code is remembered in Redis for 150 seconds, at login, when disabling MFA, when regenerating backup codes and during enrolment.
+
+Before you deploy:
+- Every existing broker hits the MFA setup screen at their next login. Set ADMIN_MFA_OPTIONAL=true to skip it in local development. The integration test sets this, because its HTTP checks use a broker without MFA.
+- Subscribe the Stripe webhook to the new events: payment_intent.processing, charge.refunded and transfer.reversed.
+- A fully reversed payout can't be paid again through the app. The original transfer ID stays on the shipment and blocks a new payout, so you'd need to fix that in the database.
+
+I found 12 more workflow bugs. Two are critical in practice: the broker's live map is always empty, and behind Docker or a proxy every user shares one login rate limit. I haven't changed any code this round.
+
+High
+
+1. The broker's live map is always empty. getActiveShipmentLocations (src/gps/location.js:89) filters on status IN ('in_transit', 'picked_up'). The app's real statuses are 'In transit' and 'Assigned', so /api/admin/gps/active never returns anything.
+2. Behind Docker or a proxy, every user shares one login rate limit. The limiter keys on req.socket.remoteAddress (src/middleware/ratelimit.js:51). Behind a reverse proxy or a hosting platform like Render, every request appears to come from the same address. Your local Docker setup may do the same, depending on how Docker forwards the port. Then 30 login, signup, verify or reset requests in 15 minutes, across all users combined, lock everyone out.
+3. Reschedule and quote-revision requests can't be declined. The server only has approve and revise actions; there's nothing to reject or withdraw. A request the broker doesn't want stays open, and while it's open the store can't make a new one ("already awaiting review"). The store can't withdraw its own request either.
+4. Team members can accept a quote they can't see. acceptQuote only needs shipments.write, but the price is hidden from anyone without billing.read. A team member can commit the store to a price they never saw.
+
+Medium
+
+5. Drivers can download the customer's invoice. The invoice route allows shipment.driver_id === u.id (src/server.js, invoice route), so the driver sees the customer price and the store's address and email. Everywhere else, the price is hidden from drivers.
+6. Drivers get paid before claims are settled, and credits change nothing. A payout is allowed while a shortage or damage claim is open, or when delivery recorded shortage, damage or refusal. A claim decided as credit has no effect on the invoice or the Stripe charge, so the store pays the full price.
+7. GPS is shared before pickup. Recording is allowed in Assigned, which can be days before the job. The store can then see where the driver is, including at home. Sharing should start at pickup.
+8. GPS input isn't validated.
+   - latitude, longitude, accuracy and similar values are stored without range or type checks. Bad strings cause 500 errors, and impossible coordinates get saved.
+   - On the history endpoint, limit has no upper bound, and an invalid since causes a 500.
+9. Email codes can be guessed across many IP addresses. The 6-digit verification code has no limit on attempts per account. The only limit is per IP address, so guessing spread across several addresses isn't stopped. The code also isn't invalidated after repeated wrong attempts.
+
+Low
+
+10. The frontend shows buttons the server will refuse.
+    - "Approve and recheck schedule" appears for In-transit or Delivered shipments.
+    - "Request a new delivery time" still shows while a request is already open.
+    - The quote form says "quote expiry … not implemented", but quotes expire after 72 hours, and the broker can't choose the expiry.
+11. Old GPS points and device tokens are never cleaned up. cleanupOldLocations (meant to keep 90 days) and cleanupOldTokens are never called, so gps_locations grows forever.
+12. Drivers can't update their truck. There's no endpoint for it, and plates must be unique, so a driver who changes trucks needs a new account.
+
+Want me to fix these? Items 1, 2, 4, 5, 7, 8, 10 and 11 are small. Item 3 needs new reject and withdraw actions, and item 6 needs a decision on how claim credits affect the charge and the payout.
+
+
+
+I fixed all 12. The 4 unit tests pass and every source file passes a syntax check. As before, the PostgreSQL integration test is skipped without a database, so none of this has run against the real app. One test run hung once and was killed after 120 seconds; the next full run passed in about 9 seconds.
+
+High
+1. The broker's live map works. getActiveShipmentLocations now filters on 'In transit'.
+2. Rate limiting no longer locks everyone out together.
+   - Setting TRUST_PROXY to the number of proxies in front of the app (or true for one) makes the server take the real client IP from X-Forwarded-For.
+   - Login, signup, verification, resend and reset also have a limit of 10 attempts per account per 15 minutes.
+   - The per-address limit went from 30 to 60.
+3. Requests can be declined or withdrawn. The new actions are declineReschedule, withdrawReschedule, declineQuoteRevision ("Keep current quote") and withdrawQuoteRevision. Broker declines need a reason the store can see, and each has a button in the UI.
+4. Accepting a quote needs billing access, in addition to permission to edit shipments.
+
+Medium
+5. Drivers can't download the customer invoice, and the button is hidden for them. The payment-status endpoint also only shows the charge amount to people with billing access.
+6. Claims and money:
+- Payment and payout are blocked while a claim is open.
+- A credit decision needs an amount, and total credits can't exceed the price. Earlier claims are now kept in history instead of being overwritten.
+- The invoice and the Stripe charge now use one shared calculation (src/invoices/billing.js), so they always match, and both deduct credits.
+- If a credit is granted after payment, the credit plus GST is refunded through Stripe automatically. A failed refund is recorded on the shipment.
+- If the amount owed changes before payment, the old unpaid PaymentIntent is cancelled and a new one is created.
+- Paying a driver for a delivery with recorded shortage or damage, and no claim, needs an explicit confirmation.
+7. GPS is only recorded and shared between pickup and delivery. Stores and drivers only see route history from the pickup time onwards.
+8. GPS input is validated. Coordinates, accuracy, speed, heading and altitude are checked against valid ranges. History limit must be between 1 and 1000, and since must be a valid date. Bad input returns 400 instead of 500.
+9. Wrong verification codes are limited per account. Five wrong codes invalidate the code, on top of the per-account limit from item 2.
+
+Low
+10. The frontend matches the server.
+    - The quote form has a "Quote valid for (hours)" field and an accurate note about GST and expiry.
+    - The approve button only appears in statuses the server accepts.
+    - Request buttons are replaced by "Withdraw" while a request is open.
+11. Daily cleanup runs. GPS points older than 90 days and stale device tokens are deleted.
+12. Drivers can update their truck from a "My truck" form on their profile (PATCH /api/truck). The truck goes back for broker approval, jobs not yet picked up return to dispatch, and brokers are notified. The update is refused while a delivery is In transit.
+
+I found 11 more workflow bugs. The worst: same-day bookings are refused every evening, and a delivery stuck mid-route has no way out. Two of the bugs come from my own notification changes last round. I haven't changed any code.
+
+High
+
+1. Same-day bookings are refused every evening. createShipment compares the pickup date with today's date in UTC (src/store.js:444). After 5 pm in Calgary (6 pm in summer), UTC is already tomorrow, so today's date is rejected as "in the past".
+2. Shipments with a past pickup date keep moving through dispatch. None of acceptQuote, bid, offer, acceptBid or acceptJob checks the pickup date. A 72-hour quote can be accepted after its pickup day. An unassigned shipment whose date has passed stays in "Ready to assign" forever, and drivers can keep bidding on it.
+3. A delivery stuck in transit can't be recovered. unassignDriver, change and cancel all exclude In transit. If the truck breaks down or the driver has an emergency, the broker can't hand the load to another driver or close it out. It stays stuck until that driver delivers.
+4. Duplicating a request with stops fails.
+   - duplicateShipment (public/runtime.js) joins each stop's fields with filter(Boolean). When the stop contact is empty, the time window moves into the contact slot, and the server rejects it with "Unsupported intermediate stop time window".
+   - A service time of 0 minutes is dropped and comes back as 20.
+   - Pickup and receiving contacts, receiving hours, appointment, cargo notes and requested quantity aren't copied either.
+
+Medium
+
+5. Resolving an exception as "cancelled" doesn't cancel anything. resolve with outcome: 'cancelled' only marks the exception resolved. The delivery carries on.
+6. Drivers aren't told what changed. (from my change last round) When no specific message applies, the notification code falls back to "Status: Assigned". When a reschedule is approved or an exception is resolved, the driver gets that and not the new date or the resolution.
+7. Brokers are notified about every bid. (from my change last round) Every bid and withdrawal now sends each broker an inbox notification, plus push, SMS or email if enabled.
+8. Location sharing stops on the first failed upload. startBrowserTracking stops tracking on any error, including going offline, a timeout or a 429. Driving through a dead zone ends tracking with only a toast. Sharing also keeps running after delivery, and then shows a confusing "starts when goods are picked up" error.
+
+Low
+
+9. Without an active broker account, automatic processing stops. Audit entries need an actor, so expireStaleDispatch returns early when there's no active broker. Quotes, offers and bid windows then never expire. recheckDriverCompliance also skips handing jobs back to dispatch.
+10. Stores can't ask to cancel after accepting a quote. Store cancel only works in Awaiting quote and Quote ready. From Ready to assign onwards, there's no in-app way to ask the broker to cancel.
+11. Claims have no time limit. A store can open a claim months after delivery, even after the driver has been paid.
+
+Want me to fix these? Items 1, 4, 5, 6, 7 and 8 are small. Items 2, 3 and 10 need decisions:
+- #2: whether shipments with a past date expire automatically or are flagged for the broker.
+- #3: what a broker can do mid-delivery: hand the load to another driver, return it to the warehouse, or cancel with a reason.
+- #10: whether stores can req
+I fixed all 11. The 4 unit tests pass and every source file passes a syntax check. As before, the PostgreSQL integration test is skipped without a database, so none of this has run against the real app.
+
+High
+1. Same-day bookings work in the evening. New bookings now compare against today's date in Calgary, not UTC.
+2. Past pickup dates stop dispatch.
+   - Accepting a quote, bidding, offering, selecting a bid and accepting a job are refused once the pickup date has passed.
+   - A sweep every minute flags stale shipments in Quote ready, Ready to assign or Offered. It clears their bids, returns any open offer to dispatch, and records an entry in the history.
+   - Stale loads disappear from the driver load board, and both sides see a "Pickup date has passed" banner.
+   - Approving the store's reschedule request clears the flag.
+3. Stuck deliveries can be recovered.
+   - Brokers get a new "Breakdown: hand the load to another driver" button. They enter where the goods are now, which becomes the pickup for the next driver. Completed stops stay completed, and the hand-off is kept in the shipment's history.
+   - If the original date has passed, the rescue run is dated today.
+   - Brokers can also cancel an In-transit delivery with a reason.
+4. Duplicating a request works with stops. Stop fields keep their positions even when the contact is empty, and a service time of 0 is kept. Contacts, receiving hours, appointment, cargo notes, requested quantity and service minutes are now copied too.
+
+Medium
+5. Resolving an exception as "cancelled" now cancels the delivery, after a confirmation in the UI.
+6. Drivers' notifications spell out what changed. The fallback message is now the history entry itself, such as the new date or the resolution, instead of "Status: Assigned".
+7. Brokers no longer get a notification for every bid. Bids still appear live on the dispatch board.
+8. Location sharing keeps going through dead zones.
+- Network errors and rate limits show "Connection lost…" once, and sharing resumes automatically.
+- It only stops when the server says the delivery is no longer in transit, or when the delivery finishes.
+
+Low
+9. Automatic processing no longer needs a broker account. Audit entries can now have no actor, and they appear as "YYC system" in the history. schema.sql drops the NOT NULL on audit.actor_id the next time the server starts.
+10. Stores can request cancellation for Ready to assign, Offered and Assigned deliveries, and can withdraw the request. Brokers see the request with "Approve cancellation", which cancels the delivery and records the approval, or "Decline", which asks for a reason.
+11. Claims must be opened within 7 days of delivery. Change the limit with CLAIM_WINDOW_DAYS.
+
+Before you deploy:
+- The audit table changes on first start. When the server starts after
+All 11 bugs from the last list are already fixed in your working tree. Nothing on that list is still open.
+
+The only loose end from my last message is pa
+I found 11 more workflow bugs. Two directly affect your local Docker setup: no new store or driver account can get past email verification, and there's no way to get a new code. One deadlock was introduced by my own changes last round. I haven't changed any code this round.
+
+High
+
+1. New store and driver accounts can't sign in locally. compose.yyc-local.yml doesn't set RESEND_API_KEY, so sendEmail skips sending and logs only the recipient and subject, not the code. Login requires a verified email for stores and drivers, so no new account can ever sign in. Password-reset links are lost the same way.
+2. There's no way to get a new verification code. The frontend never calls /api/resend-code. Codes expire after 15 minutes, so if the email is late, lost or expired, the account is stuck. Registering again fails with "already registered".
+3. Failed emails are reported as sent. With resend v4, emails.send returns { data, error } instead of throwing. sendEmail (src/email/client.js:36) treats an error as success, so signup says "check your email" even when nothing was sent.
+4. Some shipments with a past pickup date can never be dispatched again. (from my change last round) The past-date flag survives when a quote expires or the broker uses change, both of which put the shipment back in Awaiting quote. In Awaiting quote, a reschedule can't be requested or approved, and the broker has no way to change the date. Once re-quoted, the store's accept is refused forever.
+
+Medium
+
+5. Only the last driver gets a payout after a mid-delivery hand-off. The payout route pays driver_id, which is the replacement driver. The first driver's leg is in the hand-off history, but nothing reminds the broker to pay them.
+6. User-entered text goes into emails unescaped. Names, store names, driver names and destinations are inserted into the HTML templates as-is, for example Welcome, ${name}!. Anyone can register with HTML or links in their name and have it sent from your domain.
+7. A failed email during signup shows as a failed signup. If sending throws, /api/register returns an error, but the account already exists, so retrying says it's already registered.
+8. Failed claim refunds are never retried. refundPendingCredits runs once, right after resolveClaim. A credit marked failed stays that way, and there's nothing in the UI to retry it.
+9. The per-account login limit counts successful logins. Signing in 10 times in 15 minutes, for example across several devices or after a few logouts, locks the account out. Only failed attempts should count.
+
+Low
+
+10. The "Verify email" screen has no way back to login, except reloading the page.
+11. Drivers whose truck is waiting for re-approval still see the load board, but every bid fails with "Driver and truck approval is required". The load board only checks driver approval, not truck approval.
+
+Want me to fix these? Items 1–4, 6–8, 10 and 11 are contained. Item 9 changes how the login limit counts, and item 5 needs the pay-split decision from my last message: split by distance, a broker-entered split at hand-off, or keep it manual.
+
+✻ Churned for 1m 40s · done 6:41 PM
+
+─────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────i───
+  ⏵⏵ auto mode on (shift+tab to ciycle)
+
+
+
+I fixed all 11. The 4 unit tests pass and every source file passes a syntax check. As before, the PostgreSQL integration test is skipped without a database, so none of this has run against the real app.
+
+High
+1. Local signup works without Resend. Outside production, the email body is now printed to the server log. Run docker compose -f compose.yyc-local.yml logs app (with sudo if needed) and look for [Email] Body: to find the verification code or reset link. I also fixed the plain-text conversion so CSS from the email template no longer shows up in that text.
+2. "Send a new code" is now on the verification screen, using /api/resend-code.
+3. Email failures are detected. sendEmail now checks the error that Resend v4 returns and raises it, instead of reporting success.
+4. Past-date shipments can always be fixed.
+   - Stores can request a reschedule in Awaiting quote, and brokers can approve it there.
+   - The broker's change form now has pickup date and window fields, and a new date clears the past-date flag.
+   - Quoting or revising a quote is refused while the date is past, so brokers don't quote a stale date.
+
+Medium
+5. Hand-off pay.
+- When handing a load off mid-delivery, the broker enters the departing driver's pay for their leg.
+- It's paid together with the main payout, on top of the final driver's rate. Combined driver payouts can't exceed the delivery price.
+- Every hand-off driver must have finished Stripe setup before any money moves.
+- The amount owed shows on the shipment.
+6. User text in emails is escaped. Names, store names, driver names, destinations and receipt references are HTML-escaped.
+7. A failed email no longer looks like a failed signup. The account is created, and the response says to use "Send a new code".
+8. Failed payments can be retried. Brokers get a "Retry failed refunds / payouts" button for failed claim refunds and hand-off payouts (POST /api/admin/shipments/:id/retry-payments).
+9. The per-account login limit only counts failed sign-ins, including wrong MFA codes. A successful login resets the count.
+
+Low
+10. The verification screen has "Back to login".
+11. Drivers only see the load board while both they and their truck are approved.
+
+Behaviour change to know about: printing email bodies to the log is skipped only when NODE_ENV=production. Your local compose file sets development, so codes appear in the logs. Make sure any real deployment sets production, or verification codes and reset links will end up in its logs.
+
+Rebuild with ./start-yyc.sh. Nothing is committed.
+
+
+Most of the app logic has now been reviewed several times, so this round I'll focus on what's left: the deployment setup (Dockerfile, compose, scripts), the migration and backup scripts, and how the newer features fit together.
+
+  Searched for 1 pattern, ran 2 shell commands
+
+The origin check works on port 3001 via the Host header, but email links and Stripe return URLs fall back to localhost:3000, which is a real problem for your setup. Next I'm checking the security headers and the socket CORS setting. · summary
+
+  Searched for 1 pattern
+
+The CSP's connect-src doesn't include the S3 host, but the browser uploads documents to S3 with a fetch PUT to a presigned URL. Checking how those URLs are built:
+
+  Ran 1 shell command
+
+This round turned up 7 issues, mostly in deployment and configuration rather than app logic. The app's own workflows look covered now; what's left would show up in end-to-end testing against the running app. I haven't changed any code.
+
+High
+
+1. The browser blocks every document upload once S3 is configured. The Content Security Policy (src/server.js:221) allows connect-src 'self' ws: wss: https://api.stripe.com only. The browser uploads compliance documents and proof photos with fetch(uploadUrl, { method: 'PUT' }) straight to the S3 presigned URL, so the CSP blocks every upload. Approving a driver requires documents whenever S3 is configured, so no driver could be approved.
+2. Locally, email links and Stripe's return URLs go to a dead port. When PUBLIC_ORIGIN isn't set, the password-reset link (src/email/client.js:137), the Stripe onboarding return URLs (src/server.js:1198) and the email buttons all fall back to http://localhost:3000. Your compose file serves the app on 127.0.0.1:3001 and doesn't set PUBLIC_ORIGIN, so those links fail.
+3. npm run backup doesn't back up your data. scripts/backup.js copies data/yyc.sqlite, but the app uses PostgreSQL now. In Docker it just prints "No database exists yet", so there's no working backup at all.
+
+Medium
+
+4. A document can be recorded without ever being uploaded. POST /api/documents checks the S3 key's prefix but not that the file exists. A failed or skipped upload still creates a "pending" licence or insurance record. A broker could approve it, and the download would then fail.
+5. Bad upload requests return a 500. getUploadUrl throws a plain Error for an unsupported file type or extension, so the user sees "An unexpected server error occurred" instead of the reason.
+6. The Docker health check can fail on Render. The HEALTHCHECK in the Dockerfile hard-codes http://localhost:3000/healthz. Render sets its own PORT, so the container can be marked unhealthy even though the app is fine.
+
+Low
+
+7. Email buttons go to the site root. "View Quote", "View Job Offer" and "View Details" all link to PUBLIC_ORIGIN, which opens the portal chooser, not the shipment. (These helpers aren't called at the moment; the main notifications use the generic message path.)
+
+Separately, after your rebuild, the local broker account will be asked to set up an authenticator app (from the MFA change). Add ADMIN_MFA_OPTIONAL: "true" to the app's environment in compose.yyc-local.yml if you want to skip that locally.
+
+Want me to fix these? All seven are small. For #3, I'd replace the script with a pg_dump-based backup that also works through docker exec.
+
+✻ Brewed for 1m 1s · done 6:49 PM
+
+
+
+❯ find more workflow bugs
+
+Most of the app logic has now been reviewed several times, so this round I'll focus on what's left: the deployment setup (Dockerfile, compose, scripts), the migration and backup scripts, and how the newer features fit together.
+
+  Searched for 1 pattern, ran 2 shell commands
+
+The origin check works on port 3001 via the Host header, but email links and Stripe return URLs fall back to localhost:3000, which is a real problem for your setup. Next I'm checking the security headers and the socket CORS setting. · summary
+
+  Searched for 1 pattern
+
+The CSP's connect-src doesn't include the S3 host, but the browser uploads documents to S3 with a fetch PUT to a presigned URL. Checking how those URLs are built:
+
+  Ran 1 shell command
+
+This round turned up 7 issues, mostly in deployment and configuration rather than app logic. The app's own workflows look covered now; what's left would show up in end-to-end testing against the running app. I haven't changed any code.
+
+High
+
+1. The browser blocks every document upload once S3 is configured. The Content Security Policy (src/server.js:221) allows connect-src 'self' ws: wss: https://api.stripe.com only. The browser uploads compliance documents and proof photos with fetch(uploadUrl, { method: 'PUT' }) straight to the S3 presigned URL, so the CSP blocks every upload. Approving a driver requires documents whenever S3 is configured, so no driver could be approved.
+2. Locally, email links and Stripe's return URLs go to a dead port. When PUBLIC_ORIGIN isn't set, the password-reset link (src/email/client.js:137), the Stripe onboarding return URLs (src/server.js:1198) and the email buttons all fall back to http://localhost:3000. Your compose file serves the app on 127.0.0.1:3001 and doesn't set PUBLIC_ORIGIN, so those links fail.
+3. npm run backup doesn't back up your data. scripts/backup.js copies data/yyc.sqlite, but the app uses PostgreSQL now. In Docker it just prints "No database exists yet", so there's no working backup at all.
+
+Medium
+
+4. A document can be recorded without ever being uploaded. POST /api/documents checks the S3 key's prefix but not that the file exists. A failed or skipped upload still creates a "pending" licence or insurance record. A broker could approve it, and the download would then fail.
+5. Bad upload requests return a 500. getUploadUrl throws a plain Error for an unsupported file type or extension, so the user sees "An unexpected server error occurred" instead of the reason.
+6. The Docker health check can fail on Render. The HEALTHCHECK in the Dockerfile hard-codes http://localhost:3000/healthz. Render sets its own PORT, so the container can be marked unhealthy even though the app is fine.
+
+I fixed all 7. The 4 unit tests pass and every source and script file passes a syntax check. The new backup script exits cleanly when DATABASE_URL is missing. As before, I couldn't run anything against the real app or database.
+
+1. Document uploads are allowed by the CSP. connect-src now includes https://*.amazonaws.com. If you set AWS_S3_ENDPOINT for S3-compatible storage such as MinIO or R2, the CSP allows that origin instead, and the S3 client now uses that endpoint too.
+2. Links go to the address you actually use.
+   - compose.yyc-local.yml now sets PUBLIC_ORIGIN: http://localhost:3001.
+   - Email links read PUBLIC_ORIGIN, or fall back to the server's own port.
+   - Stripe onboarding sends drivers back to whatever address their browser used.
+3. Backups actually back up PostgreSQL.
+   - The new ./backup-yyc.sh runs pg_dump inside the yyc-postgres container and writes backups/yyc-<timestamp>.dump. The file is readable only by you; restore it with pg_restore.
+   - npm run backup now uses pg_dump with DATABASE_URL, for machines with the PostgreSQL client installed. It keeps the password out of the process list and deletes partial files on failure.
+4. Documents are only recorded once the file exists in S3. The server checks storage before saving the record, and uses S3's file size and type instead of trusting the browser.
+5. Bad upload requests return a 400 with the reason, such as "Upload a PDF, JPG or PNG file", not a 500.
+6. The Docker health check uses $PORT, and fails cleanly if the connection is refused.
+7. Email buttons open the right portal. "View Quote" and "View Details" go to /store, and "View Job Offer" goes to /driver.
+
+Things to know:
+- Open the app at http://localhost:3001, not 127.0.0.1:3001. With PUBLIC_ORIGIN set, the server only accepts browser requests from exactly that address, so logins and saves from 127.0.0.1 would be refused.
+- Your S3 bucket needs a CORS rule. It must allow PUT from your app's origin, or the browser will still refuse the upload. That's set in AWS, not in the code.
+- The local broker will be asked to set up an authenticator at the next login. Add ADMIN_MFA_OPTIONAL: "true" to the app's environment in compose.yyc-local.yml to skip that locally.
+
+Rebuild with ./start-yyc.sh. Nothing is committed.
+
+✻ Crunched for 2m 37s · done 6:55 PM
+
+e workflow bugs
+
+Static review of the app logic is now producing far less, so this round I'll re-check my own recent changes and the broker pages in portal.js, which I haven't looked at closely yet.
+
+  Searched for 1 pattern, ran 2 shell commands
+
+I found 5 more workflow bugs this round. Two are gaps in features I added in recent rounds. I also want to be upfront: reading the code is now giving very little back, and the remaining risk is in end-to-end behaviour I can't run from here. I haven't changed any code.
+
+High
+
+1. A store can be charged the full price after a credit was granted. If a broker grants a credit while the store's payment is still pending, the credit is recorded as needing no refund. The PaymentIntent created before the credit keeps the old, higher amount. If the store pays with a payment form that was already open, Stripe charges the full price and nothing refunds the difference. The payment_intent.succeeded webhook never compares the amount Stripe received with what the store owes.
+2. The broker's work queue misses most of what needs a decision. "Operations work queue" (realAlerts in public/runtime.js) only lists open exceptions, Awaiting quote, Ready to assign and expired offers. Brokers have to open each shipment to find these:
+   - reschedule, quote-revision and cancellation requests
+   - open claims
+   - shipments whose pickup date has passed
+   - failed claim refunds or hand-off payouts
+   - delivered shipments waiting for a driver payout
+
+Medium
+
+I fixed all 5. The 4 unit tests pass and every source and script file passes a syntax check. As before, none of this has run against the real app or a real Stripe account.
+
+1. Overpayments are refunded automatically.
+   - When Stripe reports a successful payment, the server compares the amount received with what's owed after credits, and refunds any difference.
+   - Credits settled by that refund are marked as refunded, and both steps go into the shipment's history.
+   - If the refund fails, brokers are notified to refund it by hand in Stripe, and the shipment shows "Payment failed" in the work queue.
+2. The broker work queue now shows everything waiting on a broker.
+   - Each card is tagged with its reason: open exception, open claim, cancellation, reschedule or quote-revision request, new date needed, payment failed, driver payout due, expired quote or offer, quote needed, or bids to review.
+   - Urgent items (exceptions, failed payments, claims, cancellations, past dates) come first, then the rest in date order.
+   - It says when only some shipments are loaded.
+3. A store can't be deleted while it has unpaid invoices or open claims. The error lists which shipments are blocking it.
+4. Past dates in Awaiting quote are now flagged.
+   - The sweep includes Awaiting quote, and those shipments get the "New date needed" banner.
+   - The store's team and the brokers are notified when a pickup date passes.
+   - The sweep now runs only on the server's one-minute timer, so it can send notifications and push live updates. Each action still checks its own deadline, so nothing can act on an expired quote or offer in between.
+5. The report includes final-delivery on-time results next to the stop-window figures, and says when it's based on a partial list.
+
+I'd stop the code-reading rounds here. Recent rounds have turned up fewer problems, and some of them came from my own earlier fixes. The next useful step is to rebuild with ./start-yyc.sh and drive the real flows end to end (signup, quote, bid, delivery, claim, payment). I can do that against the running app and fix whatever actually breaks. Nothing is committed yet; tell me if you want a commit first.
+I'd recommend we stop the bug-hunt rounds after this one and test the real app instead. Once you've rebuilt with ./start-yyc.sh, I can drive the main flows against the running app and fix whatever actually breaks.
+
+
+
+
+❯ find more workflow bugs
+
+Reading the code is giving diminishing returns, so I'll check whether I can actually run the app here instead: a local PostgreSQL and Redis would let me run the skipped integration test against my changes.
+
+  Ran 1 shell command
+
+No PostgreSQL or Redis server is installed here, and I can't use Docker. The containers' internal addresses may still be reachable from the host, so I'll check:
+
+  Ran 1 shell command
+Blocked by auto mode · /permissions to review
+│ Auto mode: [Containment Escape]
+
+The probe was blocked as a network scan of the Docker bridge, so I won't work around it. I'm checking that the integration test cleans up after itself in your database next, since the test has to run from your side. · summary
+
+  Ran 1 shell command
+
+The cleanup would fail: approve() writes an audit row with the broker as actor, and the ON DELETE RESTRICT constraint would block the final delete of test users. I'm checking the other tables that reference users next. · summary
+
+  Searched for 1 pattern
+
+Only audit blocks the delete. Fixing the test cleanup:
+
+● Update(test/app.test.js)
+Added 2 lines
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    if (shipmentIds.length) await databaseModule.query('DELETE FROM shipments
+WHERE id = ANY($1::text[])', [shipmentIds]);
+    // Account-level audit rows (e.g. driver approval) reference the actor wit
+h ON DELETE RESTRICT.
+    if (accountIds.length) await databaseModule.query('DELETE FROM audit WHERE
+ actor_id = ANY($1::uuid[])', [accountIds]);
+    if (accountIds.length) await databaseModule.query('DELETE FROM users WHERE
+ id = ANY($1::uuid[])', [accountIds]);
+    await redisModule.close();
+    await databaseModule.close();
+
+The test was already failing before this session: it calls completeStop without a recorded arrival, and it logs out before hitting /api/admin/providers, which returns 401. I'm fixing both now. · summary
+
+● Bash(python3 - <<'EOF'
+      p='test/app.test.js'; s=open(p).read()…)
+  process.env.DATABASE_URL = process.env.YYC_INTEGRATION_DATABASE_URL;
+  process.env.ADMIN_MFA_OPTIONAL = 'true'; // the HTTP checks below use a broker with
+out an authenticator
+… +14 lines
+Updated test/app.test.js (+5 -2)
+    current = await store.act(broker, shipmentId, 'acceptBid', { version: curr
+ent.version, driverId: driver.id });
+    current = await store.act(driver, shipmentId, 'acceptJob', { version: curr
+ent.version });
+    current = await store.act(driver, shipmentId, 'pickup', { version: current
+.version });
+    current = await store.act(driver, shipmentId, 'arriveStop', { version: cur
+rent.version, stopIndex: 0 });
+    current = await store.act(driver, shipmentId, 'completeStop', { version: c
+urrent.version, stopIndex: 0, receipt: 'STOP-1' });
+    current = await store.act(driver, shipmentId, 'deliver', { version: curren
+t.version, pod: 'POD-1', recipient: 'Receiver' });
+    assert.equal(current.status, 'Delivered');
+
+    assert.equal(session.status, 200);
+    const sessionData = await session.json();
+    assert.equal(sessionData.user.role, 'admin');
+    const logout = await fetch(origin + '/api/logout', { method: 'POST', heade
+rs: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json', 'X-C
+SRF-Token': sessionData.csrf }, body: '{}' });
+    assert.equal(logout.status, 200);
+    const providerCheck = await fetch(origin + '/api/admin/providers', { heade
+rs: { Cookie: cookie } });
+    assert.equal(providerCheck.status, 200);
+    assert.equal(typeof (await providerCheck.json()).providers.maps, 'boolean'
+);
+    const logout = await fetch(origin + '/api/logout', { method: 'POST', heade
+rs: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json', 'X-C
+SRF-Token': sessionData.csrf }, body: '{}' });
+    assert.equal(logout.status, 200);
+    const afterLogout = await fetch(origin + '/api/session', { headers: { Cook
+ie: cookie } });
+    assert.equal((await afterLogout.json()).user, null);
+    const health = await fetch(origin + '/healthz');
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).database, 'connected');
+Allowed by auto mode
+
+The test should also ignore any PUBLIC_ORIGIN in the environment, because it serves on a random port. Setting that, then adding a script that runs the test inside your Docker network:
+
+● Bash(sed -i "s/  const { server } = serverModule.createApp({ secure: false });/  const { server } = serverModule.createApp({ secure: false, publicOrigin: '' }); \/\/…)
+14:  const { server } = serverModule.createApp({ secure: false, publicOrigin: '' });
+// the test serves on a random port
+exit 0
+… +3 lines
+Updated test/app.test.js (+1 -1)
+    import('../src/store.js'), import('../src/server.js'), import('../src/redi
+s.js'), import('../src/websocket/server.js'), import('../src/db/postgres.js')
+  ]);
+  await store.initStore();
+  const { server } = serverModule.createApp({ secure: false });
+  const { server } = serverModule.createApp({ secure: false, publicOrigin: ''
+}); // the test serves on a random port
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const password = 'Integration-test-password-2048!';
+Created test-yyc.sh (+17 -0)
+#!/bin/bash
+# Run the full test suite, including the PostgreSQL + Redis integration test,
+against the
+# local Docker stack (start it first with ./start-yyc.sh). The integration tes
+t creates its own
+# accounts and shipments in yyc_dev and deletes them afterwards; it uses Redis
+ database 5 so
+# your local sessions are untouched.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+network="$(sudo docker inspect yyc-postgres --format '{{range $name, $_ := .Ne
+tworkSettings.Networks}}{{$name}}{{end}}')"
+
+sudo docker run --rm \
+  --network "$network" \
+  -v "$PWD":/app -w /app \
+  -e YYC_INTEGRATION_DATABASE_URL=postgresql://yyc_user:yyc_local_dev_password
+@postgres:5432/yyc_dev \
+  -e YYC_INTEGRATION_REDIS_URL=redis://redis:6379/5 \
+  -e NODE_ENV=test \
+  node:24-bookworm-slim npm test
+(timeout 2m 30s)
+Allowed by auto mode
+
+The real bugs this round were in the integration test itself. It had never been run, and it would have failed. I couldn't reach your database to run it: Docker needs sudo, and my attempt to reach the containers' internal network addresses was blocked by the permission system. So I fixed the test and added a script you can run.
+
+Fixed in test/app.test.js:
+1. Missing arrival step. The test called completeStop without arriveStop first. The server has always required a recorded arrival, so the test failed with "Record arrival at this stop first". It now records the arrival first.
+2. Provider check after logout. The test logged out and then called /api/admin/providers with the dead cookie, which returns 401, not 200. It now checks providers before logging out, then confirms the session is gone.
+3. Cleanup couldn't delete the test accounts. Approving the driver writes an audit row that references the broker, and audit references block deleting the user. So the test's DELETE FROM users would fail and leave test accounts in your database. It now deletes those audit rows first.
+4. The test now ignores PUBLIC_ORIGIN, because it serves on a random port and the origin check would otherwise reject its requests.
+
+New ./test-yyc.sh: it runs the whole suite, including the integration test, in a Node container on the same Docker network as your database.
+- It uses your local yyc_dev database. The test creates its own uniquely named accounts and shipments and deletes them afterwards.
+- It uses Redis database 5, so your local sessions aren't affected.
+
+To run it:
+
+! ./start-yyc.sh
+! ./test-yyc.sh
+ix these all bugs
+
+Everything from that round is already fixed: the arrival step, the logout order, the cleanup and the PUBLIC_ORIGIN handling in the integration test, plus the new ./test-yyc.sh. I haven't changed anything since, because there's nothing left from my side that I can find by reading the code.
+
+To find more real bugs, I need the code to actually run against your database, and I can't do that from here: Docker needs your sudo password, and my attempt to reach the containers directly was blocked. Run these two commands:
+
+! ./start-yyc.sh
+! ./test-yyc.sh
+
+The first rebuilds the app with this session's changes. The second runs the full test suite, including the PostgreSQL and Redis integration test. When the output comes back, I'll fix every failure it shows.
+
+If you'd rather click through the app yourself at http://localhost:3001, paste any error you hit (from the browser console or from sudo docker compose -f compose.yyc-local.yml logs app) and I'll fix it.
+
+❯ find more workflow bugs
+
+I'll check the two parts I haven't reviewed at all: the SQLite-to-PostgreSQL migration script and the /demo prototype.
+
+  Ran 2 shell commands
+
+This round's bugs are all in the SQLite-to-PostgreSQL migration script (npm run migrate, src/db/migrate.js). That matters only if you're bringing data over from the old SQLite version of the app. I didn't review /demo in depth: it's labelled as a fictional prototype that resets on refresh, so its bugs don't affect real data. I haven't changed any code.
+
+High
+
+1. Migrated store and driver accounts can't sign in. The script doesn't copy or set email_verified, so every migrated user defaults to unverified. Login refuses unverified stores and drivers, and their old codes no longer exist.
+2. The shipment counter can go backwards, and new bookings then fail. Counters are copied with ON CONFLICT … DO UPDATE SET value = EXCLUDED.value. If PostgreSQL already has shipments numbered higher than the SQLite counter, the counter drops. Every new booking then hits an ID that already exists and fails with a duplicate-key error, until the counter catches up.
+
+Medium
+
+3. Re-running the migration duplicates audit history. Users, trucks and shipments use ON CONFLICT DO NOTHING, but audit rows have no unique key and are inserted again on every run. Each shipment's history then shows every event twice, three times, and so on.
+4. A missing SQLite file can make the migration fail. If the data folder exists but yyc.sqlite doesn't, new DatabaseSync() creates an empty database instead of throwing. I checked this behaviour here. The "fresh install" path is skipped, and the migration fails with "no such table: users", leaving an empty yyc.sqlite behind.
+
+Low
+
+5. "Migrated N active sessions" is misleading. Sessions are copied into a PostgreSQL sessions table the app no longer reads, because sessions now live in Redis. Everyone is signed out after migrating, despite the message.
+
+Want me to fix these? All five are contained:
+- Mark migrated accounts as verified.
+- Only ever move the counter forward.
+- Skip audit rows that were already migrated.
+- Check that the file exists before opening it.
+- Stop copying sessions, and say plainly that everyone must sign in again.
+
+This is about as far as reading the code can go. If you run ./test-yyc.sh and paste the output, I can fix real failures instead.
+
+
+I fixed all 5 in src/db/migrate.js. It passes a syntax check and the unit tests still pass, but I couldn't run a real migration here because there's no PostgreSQL to migrate into.
+
+1. Migrated accounts can sign in. Migrated users are marked email_verified = true, since those accounts were already in use.
+2. The shipment counter only moves forward. Copying a counter now uses GREATEST, and afterwards the counter is raised to at least the highest shipment number already in PostgreSQL. New bookings can't reuse an existing ID.
+3. Re-running the migration doesn't duplicate history. Audit rows that are already there (same shipment, actor, event and time) are skipped.
+4. A missing SQLite file is treated as a fresh install. The script checks the file exists before opening it, so it no longer creates an empty yyc.sqlite and then fails. It also opens the SQogitated for 3m 23s · done 7:14 PM
+
+❯ find more edge case bugs
+
+"Edge cases" is a new angle: number rounding, cursors, dates, empty values and boundaries. I'll focus on the spots most likely to break that way, starting with how pagination passes its cursor:
+
+  Ran 1 shell command
+
+Rounding bugs confirmed: $19.99, $0.29 and $1.15 fail my hand-off pay check, and the cursor code turns YYC-123 into NaN123. I'm tracing where that cursor gets sent from. · summary
+
+  Searched for 1 pattern
+
+Two bugs are confirmed: "Load more shipments" sends a malformed after=YYC-123 cursor that the server rejects, the account export fails the same way after page one, and amounts with cents fail the exact check. I'm now checking SMS phone formats, code entry, and document expiry dates. · summary
+
+  Searched for 1 pattern
+
+I found 7 edge-case bugs. Two are serious, and one of those (rejecting amounts with cents) came from my own hand-off code last round. I haven't changed any code.
+
+High
+
+1. "Load more shipments" always fails, and account exports stop after the first page. The server returns next: 'YYC-123', but state() (src/store.js:380) does Number(after.replace(/^YYC-/, 'NaN')), which turns it into NaN123. The result is always "Invalid shipment cursor":
+   - Anyone with more than 100 shipments can never load older ones.
+   - /api/account/export stops after the first 200 shipments.
+2. Hand-off pay rejects most amounts with cents. (my bug) The check Math.round(payAmount * 100) === payAmount * 100 fails because of floating-point rounding. I confirmed that $19.99, $1.15 and $0.29 all fail with "up to two decimals".
+
+Medium
+
+3. Money totals are compared without rounding to cents. For example, 10.00 + 9.99 comes out as 19.990000000000002, which is more than 19.99. That breaks these checks:
+   - credits that add up to exactly the price
+   - hand-off shares that add up to exactly the driver rate
+   - payout plus hand-off shares compared with the price
+   - the "store still owes money" check, where a leftover of a fraction of a cent can block account deletion
+4. Local-format phone numbers break SMS, and an SMS failure also cancels the email.
+   - Phone numbers are stored as typed (for example 403-555-1234), but Twilio needs +14035551234, so SMS fails.
+   - In notifyShipmentUpdate, push, SMS and email are sent one after another with no error handling between them. When the SMS fails, that person's email is never sent either.
+5. Codes typed with spaces are rejected.
+   - An authenticator code typed as 123 456, the way the apps display it, is refused, and it counts toward the 10-failure login lockout.
+   - A verification code with a stray space counts as a wrong guess, and five of those invalidate the code.
+6. Document expiry dates aren't validated. An invalid expiryDate reaches PostgreSQL and causes a 500. A date that has already passed is accepted, and the next sweep marks the document expired, after the broker may have spent time reviewing it.
+
+Low
+
+7. A reschedule to the same date and window is accepted. The no-op request blocks the store from making a real request until a broker reviews it.
+
+Want me to fix these? All seven are contained:
+- Fix the cursor parsing.
+- Compare all money amounts in whole cents.
+- Normalise North American phone numbers to +1… before sending SMS, and send each channel independently.
+- Strip spaces from codes.
+- Validate expiry dates.
+- Reject no-op reschedule requests
+
+
+I fixed all 7. The unit tests still pass, the linter reports no errors (just the same five unused-variable warnings), and I ran quick checks of the phone formatting, the cent comparisons and the cursor parsing. As before, nothing has run against your database.
+
+1. "Load more shipments" and the account export work. The server now accepts its own YYC-123 cursors, and bare numbers. Anything else still gets "Invalid shipment cursor".
+2. Hand-off pay accepts normal amounts with cents. The decimal check allows for floating-point rounding, so $19.99, $1.15 and $0.29 pass, and the stored amount is rounded to the cent.
+3. Money is compared in whole cents for credits against the price, hand-off shares against the driver rate, payout plus hand-off shares against the price, and the "store still owes money" check. Credits of 10.00 + 9.99 on a $19.99 delivery are now accepted.
+4. SMS:
+   - Phone numbers are converted to the international +1… format before sending, so 403-555-1234, (403) 555 1234 and 1-403-555-1234 all become +14035551234. Numbers that already start with + and a country code are kept as entered.
+   - Numbers that can't be interpreted, such as a 7-digit 555-1234, are skipped with a clear log message.
+   - Push, SMS and email are now sent independently, so one failure no longer cancels the others.
+5. Spaces in codes are ignored, for authenticator codes (123 456) and email verification codes.
+6. Document expiry dates are validated. They must be a real YYYY-MM-DD date, and an already-expired document is refused with "Upload a current copy".
+7. A reschedule to the current date and window is refused with "That is already the scheduled date and window".
+
+Behaviour change: numbers without a country code are assumed to be North American. If you have customers outside Canada and the US, their numbers need to start with + and their country code.
+
+Rebuild with ./start-yyc.sh. Nothing is commit
+
+
+I found 7 more edge-case bugs. I haven't changed any code.
+
+High
+
+1. Two people acting at the same moment can silently overwrite each other. act() reads the shipment with a plain SELECT (src/store.js:671), checks the version in JavaScript, and then writes with UPDATE … WHERE id = $5 (:1235), without locking the row or checking the version in the update. Two requests that read the same version both pass the check, and the second write replaces the first. For example:
+   - Two drivers bid at the same time, and one bid disappears.
+   - Two brokers accept different bids, and both drivers get told they have the job.
+2. A fully credited delivery can never pay the driver. If claim credits cover the whole price, the store's payment is refused with "Nothing is owed…", so payment_status never becomes succeeded. The payout route requires succeeded, so that driver can never be paid.
+
+Medium
+
+3. Small balances can't be paid by card. Stripe won't charge less than $0.50 CAD. If credits leave a balance below that, creating the payment fails with a generic error. The shipment then stays unpaid forever, which also blocks the driver payout and the store's account deletion.
+4. Uploads have no size limit on the server. The 12 MB limit is only checked in the browser. The presigned URL accepts any size, so anyone with an account can put arbitrarily large files into your bucket, and the server records them.
+5. Drivers can work out the customer's price by bidding. Bids above the customer price are refused with "Bid cannot exceed the customer quote". Drivers aren't supposed to see the price, but by trying different amounts they can find the exact cut-off, which is the price.
+6. Anyone can lock someone else out. Ten wrong passwords for someone's email blocks that account's sign-in for 15 minutes. This is the usual trade-off of per-account limits, but the error should point people to password reset, and a successful reset should clear the lock.
+
+Low
+
+7. The unread count stops at 100. /api/notifications/inbox counts unread items only within the newest 100, so older unread notifications are left out of the badge.
+
+Checked and fine: promised pickup and delivery times on the 2026 daylight-saving change days (March 8 and November 1) convert correctly for every business-hours window.
+
+Want me to fix these? My planned fixes:
+1. Lock the shipment row inside act() and check the version in the UPDATE itself.
+2. Treat a fully credited delivery as settled, so the payout can go ahead.
+3. Waive balances under Stripe's minimum, with the waiver recorded in the history.
+4. Delete and reject oversized uploads when the upload is confirmed.
+5. Accept any bid amount and only enforce the price limit when the broker selects a bid.
+6. Point the lockout message to password reset and clear the lock after a reset.
+7. Count unread notifications separately.
+
+✻ Cooked for 1m 14s · done 7:20 PM
+
+I fixed all 7. The unit tests pass, the linter reports no errors and every file passes a syntax check. Nothing has run against your database yet.
+
+1. Simultaneous actions can no longer overwrite each other. act() now locks the shipment row (SELECT … FOR UPDATE), and the update only applies if the version hasn't changed. Of two simultaneous bids or bid selections, the second now waits, sees the new version, and gets "This delivery changed. Refresh and try again" instead of silently erasing the first.
+2. Fully credited deliveries are settled automatically. After a delivery or a claim decision, a shipment with nothing left to charge is marked paid, with the waiver recorded in its history. The driver payout can then go ahead.
+3. Balances under Stripe's $0.50 CAD minimum are waived the same way.
+   - Any unpaid PaymentIntent for that shipment is cancelled.
+   - Pressing "Pay invoice" on such a shipment shows a message and refreshes the page, and the payment form doesn't open.
+   - A payment that's already processing is left alone.
+4. Oversized uploads are rejected. When an upload is confirmed, files over 12 MB are deleted from S3 and refused with "Files must be 12 MB or smaller".
+5. Bids no longer reveal the customer price. Drivers can bid any amount. The price limit is checked only when a broker selects a bid, and the broker sees "This bid is above the customer price…".
+6. Lockouts point to password reset. The lockout message tells people to use "Forgot password?", and a successful reset clears the failed-login count straight away.
+7. The unread count is accurate. It's now counted across all notifications, not just the newest 100.
+
+While fixing #5 in the frontend, I briefly left a duplicate variable name in runtime.js that broke its syntax. node --check caught it and I fixed it straight away. But the frontend unit test still passed with that file broken, because it only checks for conflicting global names and doesn't parse the files. The syntax check I run after every change covers that gap.
+
+Rebuild with ./start-yyc.sh. Nothing is committed.
+
+✻ Sautéed for 1m 32s · done 7:23 PM
+
+ find more edge case bugs
+
+I'll look at duplicate Stripe webhooks, races on shared shipment data, session expiry mid-shift, and the booking date picker. First, webhook replays:
+
+  Searched for 3 patterns, ran 1 shell command
+
+The booking date picker is fine: it uses the browser's local date, which matches the server's Calgary date for Calgary users. I found 7 edge-case bugs elsewhere. I haven't changed any code.
+
+Medium
+
+1. Repeated Stripe webhook deliveries send duplicate "Payment received" messages. Stripe re-delivers an event whenever it doesn't get a timely 200. The payment_intent.succeeded update (src/server.js:529) matches again when the shipment is already paid, so every repeat re-sends the inbox notice, email and SMS to the store's team.
+2. A credit granted at the moment a payment completes can be missed. If a broker resolves a claim with a credit while the payment is still processing, the credit is saved as "no refund needed". If the payment-success webhook ran just before that credit was saved, its overpayment check doesn't see it, and nothing refunds it later. The window is small, but money is lost when it happens.
+3. Sessions end after 12 hours even while someone is actively using the app. The cookie and the Redis entry both expire 12 hours after login (src/server.js:238, src/store.js:228), with no renewal on activity. A driver on a long day gets signed out mid-delivery: location sharing stops on the next 401, and any half-filled form is lost.
+
+Low
+
+4. Reversals of hand-off payouts are ignored. transfer.reversed only looks up the main payout_transfer_id. If Stripe reverses a hand-off driver's transfer, the shipment still shows that share as paid.
+5. A | in a stop address breaks the stop. Stops are sent as address | contact | window | minutes text, so any | inside a field shifts the rest. The usual result is "Unsupported intermediate stop time window".
+6. One backup code can be used twice at the same instant. verifyBackupCode reads the remaining codes, removes the used one and saves the list, without a lock. Two simultaneous logins with the same code can both succeed.
+7. The frontend test doesn't catch syntax errors. As I saw last round, frontend-scripts.test.js passed while runtime.js couldn't even be parsed. The test should compile every script.
+
+Want me to fix these? My planned fixes:
+1. Ignore repeat success events for shipments that are already paid.
+2. Re-check for overpayment after any claim decision on a paid shipment.
+3. Renew sessions while they're in use, with an absolute limit of 7 days.
+4. Match reversals to hand-off transfers as well.
+5. Have stop fields typed as \| keep a literal |.
+6. Remove a backup code with a single atomic update.
+7. Make the frontend test compile every script.
+
+✻ Worked for 58s · done 7:25 PM
+
+
+Here's the approach for the two that need more than a small patch:
+- #2, refunds: I'll replace the one-time overpayment check with a reconciliation: the amount received, minus everything already refunded, minus what's owed now. It runs after Stripe confirms a payment and after every claim decision, so it covers any ordering of events.
+- #3, sessions: A session will stay valid while it's in use and expire after 12 idle hours, with an absolute limit of 7 days. The signal that revokes old sessions after a password reset must then last 7 days too, or a reset couldn't revoke sessions older than 12 hours.
+
+Reading the backup-code and frontend test code first:
+
+  Ran 1 shell command
+
+I retracted the earlier claim about #7: the frontend test does compile the joined scripts and would have caught that error, and the "4 passed" came from an old log. Next I'm reviewing the webhook guard, refund reconciliation and hand-off reversals in the server. · summary
+
+  Ran 1 shell command
+
+● Bash(python3 - <<'EOF'
+      p='src/server.js'; s=open(p).read()…)
+Updated src/server.js (+47 -22)
+  return results;
+}
+
+/* A store can pay an intent created before a claim credit was granted. Refun
+d anything
+   received above what is owed now, and mark those credits as settled by that
+ refund. */
+async function refundOverpayment(shipmentId, paymentIntent) {
+/* Refund reconciliation: whatever the store paid, minus everything already r
+efunded, minus
+   what it owes now (after credits) is refunded. Runs after a payment succeed
+s and after every
+   claim decision, so a credit is never missed whatever order those happen in
+. Credits saved as
+   "not needed" (granted before payment) are marked as covered by the refund.
+ */
+async function reconcileRefunds(shipmentId, paymentIntent = null) {
+  const record = await store.getShipment(shipmentId);
+  if (!record || record.data.overpaymentRefund) return;
+  const received = (paymentIntent.amount_received ?? paymentIntent.amount) /
+100;
+  const owed = billingTotals(record.data).total;
+  const excess = Math.round((received - owed) * 100) / 100;
+  if (excess < 0.01) return;
+  let overpaymentRefund;
+  if (!record || record.payment_status !== 'succeeded' || !record.payment_int
+ent_id || record.data.paymentWaived) return;
+  const cents = value => Math.round(Number(value || 0) * 100);
+  const receivedCents = paymentIntent ? (paymentIntent.amount_received ?? pay
+mentIntent.amount) : cents(record.payment_amount);
+  const refunds = [...(record.data.overpaymentRefunds || []), ...(record.data
+.overpaymentRefund && !record.data.overpaymentRefund.status ? [record.data.ov
+erpaymentRefund] : [])];
+  const seen = new Set();
+  const refundedCents = refunds.filter(r => !r.status && r.refundId && !seen.
+has(r.refundId) && seen.add(r.refundId)).reduce((sum, r) => sum + cents(r.amo
+unt), 0)
+    + (record.data.credits || []).filter(c => c.refund === 'refunded' && c.re
+fundAmount != null).reduce((sum, c) => sum + cents(c.refundAmount), 0);
+  const excessCents = receivedCents - refundedCents - cents(billingTotals(rec
+ord.data).total);
+  if (excessCents < 1) return;
+  const excess = excessCents / 100;
+  let entry;
+  try {
+    const refund = await stripePayments.refundPayment(paymentIntent.id, exces
+s, `yyc-overpayment-${shipmentId}-${paymentIntent.id}`, { shipmentId, reason:
+ 'claim credit granted before payment' });
+    overpaymentRefund = { amount: excess, refundId: refund.refundId, at: new
+Date().toISOString() };
+    // Same refunded-so-far total gives the same key, so concurrent runs shar
+e one refund.
+    const refund = await stripePayments.refundPayment(record.payment_intent_i
+d, excess, `yyc-reconcile-${shipmentId}-${refundedCents}`, { shipmentId, reas
+on: 'amount paid above what is owed after credits' });
+    entry = { amount: excess, refundId: refund.refundId, at: new Date().toISO
+String() };
+  } catch (error) {
+    overpaymentRefund = { amount: excess, status: 'failed', error: String(err
+or.message).slice(0, 200), at: new Date().toISOString() };
+    console.warn(`[Stripe] Overpayment refund failed for ${shipmentId}:`, err
+or.message);
+    entry = { amount: excess, status: 'failed', error: String(error.message).
+slice(0, 200), at: new Date().toISOString() };
+    console.warn(`[Stripe] Refund reconciliation failed for ${shipmentId}:`,
+error.message);
+… 74 more lines
+
+Now sliding sessions (#3) and the backup-code race (#6):
+
+● Bash(python3 - <<'EOF'
+      def edit(p, pairs):…)
+22:  backup_codes TEXT,
+Updated src/store.js (+14 -1)
+  await query('UPDATE users SET password_hash = $1 WHERE email = $2', [passwo
+rdHash, email(em)]);
+}
+
+const SESSION_IDLE_MS = 12 * 3600000;
+const SESSION_MAX_MS = 7 * 24 * 3600000;
+
+export async function createSession(uid) {
+  let token = randomBytes(32).toString('hex');
+  let csrf = randomBytes(24).toString('hex');
+
+  let s = await getSession(tokenHash);
+
+  if (!s || s.expires_at < Date.now()) return null;
+  // Sessions stay alive while in use: expire after 12 idle hours, and never
+last beyond 7 days.
+  const createdAt = s.created_at || s.expires_at - SESSION_IDLE_MS;
+  const absoluteEnd = createdAt + SESSION_MAX_MS;
+  if (Date.now() >= absoluteEnd) { await deleteSession(tokenHash); return nul
+l; }
+  const revokedAt = await getSessionsRevokedAt(s.user_id);
+  if (revokedAt && (s.created_at || s.expires_at - 12 * 3600000) <= revokedAt
+) return null;
+
+  let u = await user(s.user_id);
+  return u && !u.disabled ? { user: u, csrf: s.csrf } : null;
+  if (!u || u.disabled) return null;
+  // Renew at most every 10 minutes to keep Redis writes low.
+  if (s.expires_at - Date.now() < SESSION_IDLE_MS - 10 * 60000) {
+    const expiresAt = Math.min(Date.now() + SESSION_IDLE_MS, absoluteEnd);
+    await setSession(tokenHash, { ...s, created_at: createdAt, expires_at: ex
+piresAt }, Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000)));
+  }
+  return { user: u, csrf: s.csrf };
+}
+
+export async function logout(token) {
+Updated src/redis.js (+3 -2)
+
+/**
+ * Invalidate every session a user created before now (e.g. after a password r
+eset).
+ * Kept for the 12-hour maximum session lifetime.
+ * Kept for the 7-day maximum session lifetime.
+ * @param {string} userId - User ID
+ */
+export async function revokeUserSessions(userId) {
+  await redis.setex(`sessions_revoked_before:${userId}`, 43200, String(Date.no
+w()));
+  // Kept for the 7-day maximum session lifetime, so every older session stays
+ revoked.
+  await redis.setex(`sessions_revoked_before:${userId}`, 7 * 24 * 3600, String
+(Date.now()));
+}
+
+/**
+Updated src/auth/mfa.js (+6 -4)
+    return false;
+  }
+
+  // Remove used code
+  // Remove used code, but only if nobody else consumed a code since we read
+the list:
+  // two simultaneous logins with the same code cannot both succeed.
+  hashedCodes.splice(index, 1);
+
+  await query(
+    'UPDATE users SET backup_codes = $1 WHERE id = $2',
+    [JSON.stringify(hashedCodes), userId]
+  const updated = await query(
+    'UPDATE users SET backup_codes = $1 WHERE id = $2 AND backup_codes = $3',
+    [JSON.stringify(hashedCodes), userId, user.backup_codes]
+  );
+  if (!updated.rowCount) return false;
+
+  console.log(`[MFA] Backup code used for user ${userId}, ${hashedCodes.lengt
+h} codes remaining`);
+
+
+Now escaped | in stop fields (#5), and updating the work queue for the new refund records:
+
+● Bash(python3 - <<'EOF'
+      def edit(p, pairs):…)
+[ 'Unit 4 | Bay 2, 100 Main St', 'Sam', '13:00–16:00', '20' ]
+[ 'Plain St', '', 'Flexible', '0' ]
+Unit 4 \| Bay 2 | Sam | 13:00–16:00 | 20
+… +7 lines
+Updated src/store.js (+6 -1)
+  });
+}
+
+/* "address | contact | window | minutes": split on unescaped pipes; "\|" kee
+ps a literal pipe. */
+function splitStopLine(line) {
+  return line.split(/(?<!\\)\|/).map(part => part.replace(/\\\|/g, '|').trim(
+));
+}
+
+export async function createShipment(u, input) {
+  check(u.role === 'store', 403, 'Only stores can create delivery requests.')
+;
+  const ownerId = await storeOwnerId(u);
+
+  let s = {
+    pickup: text(input.pickup, 'Pickup address', 350),
+    destination: text(input.destination, 'Delivery address', 350),
+    stops: Array.isArray(input.stops) ? input.stops.slice(0, 9).map((stop, i)
+ => { const bits = typeof stop === 'string' ? stop.split('|').map(x => x.trim
+()) : [stop?.address, stop?.contact, stop?.window, stop?.serviceMinutes]; ret
+urn { address: text(bits[0], `Stop ${i + 1} address`, 350), contact: optional
+(bits[1], 'Stop contact', 150), window: optional(bits[2], 'Stop receiving win
+dow', 80), serviceMinutes: bits[3] == null || bits[3] === '' ? 20 : Number(bi
+ts[3]) }; }) : [],
+    stops: Array.isArray(input.stops) ? input.stops.slice(0, 9).map((stop, i)
+ => { const bits = typeof stop === 'string' ? splitStopLine(stop) : [stop?.ad
+dress, stop?.contact, stop?.window, stop?.serviceMinutes]; return { address:
+text(bits[0], `Stop ${i + 1} address`, 350), contact: optional(bits[1], 'Stop
+ contact', 150), window: optional(bits[2], 'Stop receiving window', 80), serv
+iceMinutes: bits[3] == null || bits[3] === '' ? 20 : Number(bits[3]) }; }) :
+[],
+    date,
+    window: text(input.window, 'Pickup window', 30),
+    pickupServiceMinutes: input.pickupServiceMinutes == null ? 30 : Number(in
+put.pickupServiceMinutes),
+Updated public/runtime.js (+2 -2)
+
+/* Duplicate a request: keep stop fields in their positions (empty contact st
+ays empty) and
+   copy every booking detail except the date. */
+duplicateShipment=function(id){let s=shipments.find(x=>x.id===id);if(!s)retur
+n;bookingData={pickup:s.pickup,destination:s.destination,date:'',window:s.win
+dow,goods:s.goods,pallets:s.pallets,kg:s.kg,type:s.type,unloading:s.unloading
+,notes:s.notes||'',pickupContact:s.pickupContact||'',receivingContact:s.recei
+vingContact||'',hours:s.hours||'',appointment:s.appointment||'',cargoNotes:s.
+cargoNotes||'',requestedQuantity:s.requestedQuantity??'',pickupServiceMinutes
+:s.pickupServiceMinutes??30,deliveryServiceMinutes:s.deliveryServiceMinutes??
+30,stops:(s.stops||[]).map(x=>typeof x==='string'?x:[x.address||'',x.contact|
+|'',x.window||'',x.serviceMinutes??''].join(' | ')).join('\n')};bookingStep=1
+;page='booking';render();toast('Review the copied request and choose a new da
+te')};
+duplicateShipment=function(id){let s=shipments.find(x=>x.id===id);if(!s)retur
+n;bookingData={pickup:s.pickup,destination:s.destination,date:'',window:s.win
+dow,goods:s.goods,pallets:s.pallets,kg:s.kg,type:s.type,unloading:s.unloading
+,notes:s.notes||'',pickupContact:s.pickupContact||'',receivingContact:s.recei
+vingContact||'',hours:s.hours||'',appointment:s.appointment||'',cargoNotes:s.
+cargoNotes||'',requestedQuantity:s.requestedQuantity??'',pickupServiceMinutes
+:s.pickupServiceMinutes??30,deliveryServiceMinutes:s.deliveryServiceMinutes??
+30,stops:(s.stops||[]).map(x=>typeof x==='string'?x:[x.address||'',x.contact|
+|'',x.window||'',x.serviceMinutes??''].map(v=>String(v).replace(/\|/g,'\\|'))
+.join(' | ')).join('\n')};bookingStep=1;page='booking';render();toast('Review
+ the copied request and choose a new date')};
+
+/* Browser location sharing: keep trying through dead zones; stop only when t
+he server says
+   the delivery is no longer in transit, or when the delivery finishes. */
+
+const controlsBeforeRetry=controls;controls=function(s){let html=controlsBefo
+reRetry(s);if(role!=='admin')return html;let failedCredits=(s.credits||[]).fi
+lter(c=>c.refund==='failed'),dueHandoffs=(s.handoffs||[]).filter(h=>['due','f
+ailed'].includes(h.payout));if(dueHandoffs.length)html+=`<div class="notice">
+Hand-off pay owed: ${dueHandoffs.map(h=>`${money(h.payAmount)} (${E(h.payout)
+}${h.payoutError?': '+E(h.payoutError):''})`).join(', ')}. Paid together with
+ the driver payout.</div>`;if(failedCredits.length||(s.payoutStatus==='paid'&
+&dueHandoffs.some(h=>h.payout==='failed')))html+=`<button class="btn light" s
+tyle="margin-top:12px" onclick="retryShipmentPayments('${s.id}')">Retry faile
+d refunds / payouts</button>`;return html};
+
+/* Broker work queue: every shipment waiting on a broker decision, with the r
+eason. */
+function brokerQueueReasons(s){let r=[];if(s.issue&&!s.issue.resolved)r.push(
+'Open exception');if(s.claim?.status==='open')r.push('Open claim');if(s.cance
+llationRequest?.status==='open'&&!['Delivered','Cancelled'].includes(s.status
+))r.push('Cancellation request');if(s.rescheduleRequest?.status==='open'&&!['
+Delivered','Cancelled','In transit'].includes(s.status))r.push('Reschedule re
+quest');if(s.quoteRevisionRequest?.status==='open'&&s.status==='Quote ready')
+r.push('Quote revision request');if(s.pickupDatePassedAt&&['Awaiting quote','
+Quote ready','Ready to assign','Offered'].includes(s.status))r.push('New date
+ needed');if((s.credits||[]).some(c=>c.refund==='failed')||(s.handoffs||[]).s
+ome(h=>h.payout==='failed')||s.overpaymentRefund?.status==='failed')r.push('P
+ayment failed');if(s.status==='Delivered'&&s.paymentStatus==='succeeded'&&s.p
+ayoutStatus!=='paid')r.push('Driver payout due');if(dispatchExpired(s))r.push
+(s.status==='Offered'?'Offer expired':'Quote expired');if(s.status==='Awaitin
+g quote'&&!s.pickupDatePassedAt)r.push('Quote needed');if(s.status==='Ready t
+o assign'&&!s.pickupDatePassedAt)r.push((s.bids||[]).length?`${s.bids.length}
+ bid(s) to review`:'Ready to assign');return r}
+function brokerQueueReasons(s){let r=[];if(s.issue&&!s.issue.resolved)r.push(
+'Open exception');if(s.claim?.status==='open')r.push('Open claim');if(s.cance
+llationRequest?.status==='open'&&!['Delivered','Cancelled'].includes(s.status
+))r.push('Cancellation request');if(s.rescheduleRequest?.status==='open'&&!['
+Delivered','Cancelled','In transit'].includes(s.status))r.push('Reschedule re
+quest');if(s.quoteRevisionRequest?.status==='open'&&s.status==='Quote ready')
+r.push('Quote revision request');if(s.pickupDatePassedAt&&['Awaiting quote','
+Quote ready','Ready to assign','Offered'].includes(s.status))r.push('New date
+ needed');if((s.credits||[]).some(c=>c.refund==='failed')||(s.handoffs||[]).s
+ome(h=>h.payout==='failed')||s.overpaymentRefund?.status==='failed'||(s.overp
+aymentRefunds||[]).some(x=>x.status==='failed'))r.push('Payment failed');if(s
+.status==='Delivered'&&s.paymentStatus==='succeeded'&&s.payoutStatus!=='paid'
+)r.push('Driver payout due');if(dispatchExpired(s))r.push(s.status==='Offered
+'?'Offer expired':'Quote expired');if(s.status==='Awaiting quote'&&!s.pickupD
+atePassedAt)r.push('Quote needed');if(s.status==='Ready to assign'&&!s.pickup
+DatePassedAt)r.push((s.bids||[]).length?`${s.bids.length} bid(s) to review`:'
+Ready to assign');return r}
+realAlerts=function(){let list=shipments.map(s=>[s,brokerQueueReasons(s)]).fi
+lter(([,r])=>r.length);let rank=r=>['Open exception','Payment failed','Open c
+laim','Cancellation request','New date needed'].some(x=>r.includes(x))?0:1;li
+st.sort((a,b)=>rank(a[1])-rank(b[1])||String(a[0].date||'').localeCompare(Str
+ing(b[0].date||'')));return title('Operations work queue','Every delivery wai
+ting on a broker decision.')+(shipmentNextCursor?'<p class="notice">Showing l
+oaded deliveries only. Load more shipments to include older records.</p>':'')
++`<div class="grid2">${list.length?list.map(([s,r])=>`<section class="card"><
+div class="row wrap" style="gap:6px">${r.map(x=>`<span class="tag amber">${E(
+x.toUpperCase())}</span>`).join('')}</div><h2 style="margin-top:15px">${s.id}
+ · ${E(s.customer)}</h2><p class="muted" style="margin:15px 0">${E(s.issue&&!
+s.issue.resolved?s.issue.reason:s.destination)} · ${E(s.date||'')}</p>${dispa
+tchExpired(s)?`<button class="btn light" onclick="action('${s.id}','${s.statu
+s==='Offered'?'expireOffer':'expireQuote'}')">Close expired ${s.status==='Off
+ered'?'offer':'quote'}</button> `:''}<button class="btn light" onclick="openD
+elivery('${s.id}')">Review delivery →</button></section>`).join(''):'<div cla
+ss="card empty full">No shipment actions waiting.</div>'}</div>`};
+
+/* Reports: include final-delivery on-time results and say when data is parti
+al. */
+
+The parsing works in a standalone check. Confirming the regex was written into the file correctly, then running the full checks:
+
+  Ran 1 shell command
+
+I fixed the 6 real ones. #7 wasn't a bug: the frontend test does compile every script, and I misread a test log last round. This time I checked the test run's own exit code (0): the unit tests pass, the linter reports no errors, and every file passes a syntax check. I also ran quick standalone checks of the stop-line parsing. Nothing has run against your database or Stripe yet.
+
+1. Repeated Stripe webhook deliveries are ignored. A success event for a shipment that's already paid changes nothing and sends no second notice.
+2. Refunds are reconciled, so a credit can't be missed.
+   - After a payment succeeds, after every claim decision, and when a broker presses "Retry", the server works out: amount received, minus everything already refunded, minus what's owed now. It refunds any difference.
+   - If two of these run at the same time, they use the same refund key, so Stripe only processes one refund.
+   - A failed refund still notifies brokers and shows as "Payment failed" in the work queue.
+3. Sessions stay alive while in use. A session now expires after 12 idle hours, with an absolute limit of 7 days. It's renewed at most every 10 minutes, so it barely adds Redis load. The password-reset sign-out now lasts 7 days, so it still covers every session.
+4. Reversals of hand-off payouts are tracked. The share is marked "reversed" on the shipment and brokers are notified.
+5. A | inside a stop field works when typed as \|. Duplicated requests escape pipes automatically.
+6. A backup code can only be used once, even by two logins at the same instant. It's removed only if the code list hasn't changed since it was read.
+
+Behaviour changes to know about:
+- The session cookie now lasts up to 7 days. The server still signs people out after 12 idle hours.
+- Existing sessions keep working: older sessions created before this change are treated as starting 12 hours before they expire.
+
+Rebuild with ./start-yyc.sh. Nothing is committed
+
+
+❯ find more workflow bugs
+
+This round I'm looking at how the features added over the last few rounds interact: MFA, payment waivers, refunds, suspension and notifications. Checking a few specific interactions:
+
+  Searched for 1 pattern
+
+I found 6 more workflow bugs, all from how recently added features interact. I haven't changed any code.
+
+High
+
+1. A full credit granted after payment blocks the driver's payout forever. When credits cover the whole price after the store has paid, the refund returns the full charge, and Stripe's charge.refunded event marks the shipment refunded. The payout route requires succeeded (src/server.js:1376), so a driver who completed the delivery can never be paid, even though the credit is the broker's cost.
+2. Live updates bypass the broker MFA requirement. The HTTP gate blocks brokers without MFA, but the WebSocket login doesn't check MFA at all, and authorizeShipment lets any broker join any shipment's room. A broker who hasn't set up MFA still receives live shipment updates, including drivers' GPS positions.
+
+Medium
+
+3. A credit on a waived shipment gets stuck as "refund pending". A waived shipment is marked succeeded without any money changing hands. A later credit is therefore saved as needing a refund (src/store.js:1091), but there's no payment to refund. The refund step logs a warning and skips it, and reconciliation ignores waived shipments, so it stays "pending" forever.
+4. Restoring a suspended account brings back its old sessions. Suspending only sets disabled and closes live connections; the sessions themselves stay in Redis. session() rejects them while the account is disabled, but they work again the moment it's restored. If the suspension was because of a compromised account, whoever took it over is signed back in.
+5. Brokers get a notification for every stop arrival. Only bids were excluded last time. arrival, arriveStop and completeStop each still notify every broker (inbox, plus email, SMS or push), so a delivery with 8 stops sends around 17 notices per broker.
+
+Low
+
+6. Signed-in users can't change their password. The only way is the email reset flow, so someone who suspects their password has leaked has to sign out and wait for an email.
+
+Want me to fix these? My planned fixes:
+1. Allow the payout when the shipment was refunded because of credits.
+2. Apply the MFA requirement to WebSocket logins too.
+3. Treat credits on waived shipments as needing no refund.
+4. Revoke a user's sessions when they're suspended.
+5. Notify brokers only about actions that need them, not routine stop progress.
+6. Add a "Change password" form for signed-in users. It would ask for the current password and sign out other sessions.
+
+✻ Cogitated for 43s · done 7:30 PM
+
+───────────────────────────────────────────────────────────────────────────────────────────────
+❯ fix these all
+───────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)
+───────────────────────────────────────────────────────────────────────────────────────────────
+❯ fix these all
+───────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode o
+I fixed all 6. The unit tests pass, with the test run itself exiting with code 0. Every file passes a syntax check and the linter reports no errors. Nothing has run against your database or Stripe yet.
+
+1. A full credit after payment no longer blocks the driver's payout. If the shipment shows refunded only because credits cover the whole price, it counts as settled. The payout button and the "Driver payout due" tag in the work queue use the same rule.
+2. Live updates now require MFA too. A broker without MFA can't open a live connection, so they can't receive shipment updates or GPS positions. The ADMIN_MFA_OPTIONAL=true exception still applies.
+3. Credits on waived shipments need no refund. They're saved that way from the start, and credits already stuck as "refund pending" are cleared the next time the refund step runs, for example when a broker presses "Retry".
+4. Suspending or deleting an account revokes its sessions, so restoring it later doesn't sign anyone back in.
+5. Brokers aren't notified about routine progress. Stop arrivals, stop completions and bids still show live on the board, but no longer send notifications.
+6. Signed-in users can change their password from a new "Change password" form on the profile page.
+   - It asks for the current password and refuses a new one that's the same.
+   - Failed attempts count toward the per-account limit, and the change is recorded in the audit history.
+   - Other devices are signed out, and this browser gets a fresh session so the user stays signed in.
+
+One small change to the revocation rule: a session created in the same millisecond as a revocation now survives. That's what keeps the "change password" browser signed in, and the effect on security is negligible.
+
+Rebuild with ./start-yyc.sh. Nothing is committed.
+
+
+
+
+I found 6 more workflow gaps, mostly in what happens after the main flow: card disputes, payout reversals, and drivers not being told about their own status. I haven't changed any code.
+
+High
+
+1. Card disputes go unnoticed. The webhook doesn't handle charge.dispute.* events. When a store disputes the charge, the shipment still shows the payment as successful, the driver payout can still go out, and no broker is told. Stripe disputes have a response deadline, and missing it loses the dispute by default.
+2. A reversed driver payout can never be paid again. A full transfer.reversed sets payout_status = 'failed', but payout_transfer_id stays set. The payout route only proceeds when payout_transfer_id IS NULL. Even after clearing it, the idempotency key (shipment plus amount) would return the old, reversed transfer instead of a new one.
+
+Medium
+
+3. Drivers aren't told about changes to their own status. None of these notify the driver:
+   - being approved
+   - their truck being re-approved
+   - a document being approved or rejected, with the rejection reason
+   - losing approval because a document expired, was rejected or was deleted
+
+   A driver typically finds out only when their offered and assigned jobs disappear.
+4. There's no warning before a document expires. getExpiringDocuments (documents expiring within 30 days) is only available to brokers through an API. Drivers get nothing, and on the expiry date they lose approval and their jobs that haven't been picked up go back to dispatch.
+5. Some account changes aren't announced. Store-team invitees aren't told when they're added, removed members aren't told they've lost access, and users aren't told whether their account-removal request was approved or rejected.
+
+Low
+
+6. A later problem with a driver's Stripe account isn't detected. The webhook ignores account.updated, so if Stripe later disables transfers on a driver's account, stripe_onboarded stays true. That driver's payouts only fail at transfer time.
+
+Want me to fix these? My planned fixes:
+1. On a dispute, hold the driver payout, flag the shipment in the broker work queue with the response deadline, and notify brokers. Record the outcome when the dispute closes.
+2. After a full reversal, clear the transfer I
+I fixed all 6. The unit tests pass (exit code 0), every file passes a syntax check, and the linter reports no errors. Nothing has run against Stripe or your database yet.
+
+1. Card disputes are tracked.
+   - When a dispute opens, the shipment records its reason, amount and response deadline, and brokers are notified.
+   - The driver payout is refused while the dispute is open.
+   - The broker work queue shows "Card dispute · respond by …" at the top.
+   - When it closes, the outcome is recorded. If the dispute is lost, the payment is marked refunded.
+2. A reversed payout can be issued again.
+   - A full reversal moves the transfer into a payout history and clears it from the shipment.
+   - Each payout attempt uses its own Stripe key, while retries of the same attempt still reuse it, so a crash can't pay twice.
+   - A late "transfer created" event for the reversed transfer can no longer mark the shipment paid again.
+3. Drivers are told about their own status. They're notified when they're approved, when a document is approved or rejected (with the reason), and when their approval is paused because a document expired, was rejected or was deleted. That last message includes how many jobs went back to dispatch, and brokers get a matching notice.
+4. Expiry reminders. Drivers get a reminder 30 days and 7 days before an approved document expires. The check runs hourly, and each reminder is sent once.
+5. Account changes are announced. People are notified when they're added to or removed from a store team. A rejected removal request is announced with the broker's notes. An approved one is emailed to the original address before the account's details are removed.
+6. Stripe account restrictions are followed. account.updated keeps the driver's payout status in step with Stripe. If transfers are disabled, the driver is told to finish Stripe setup again. If Stripe enables them, payouts are switched on automatically without the driver pressing anything.
+
+New notices go out through the user's chosen channels (inbox, email, SMS, push).
+
+Stripe setup needed:
+- Subscribe the existing webhook endpoint to charge.dispute.created, charge.dispute.updated and charge.dispute.closed.
+- account.updated for drivers' accounts needs a Connect webhook in the Stripe dashboard (a separate endpoint type), pointing at the same URL. Stripe gives that endpoint its own signing secret, but the server only verifies with one secret. Until the server is changed to accept a second secret, those events will be rejected as invalid; I can make that change if you'd like.
+
+Rebuild with ./start-yyc.sh. Nothing is committed.
+
+I found 6 more workflow bugs. One is the webhook secret I flagged last round, and another is a related misreport I found in the same code. I haven't changed any code.
+
+High
+
+1. Webhook events about drivers' Stripe accounts are rejected. Events like account.updated come through a separate Connect webhook, which has its own signing secret. The server only verifies with STRIPE_WEBHOOK_SECRET, so those events fail verification and get a 400. That means the restriction tracking from last round never actually runs.
+2. Webhooks show as configured even when the secret is missing. webhooksConfigured() returns webhookSecret !== null (src/payments/stripe.js:244), which is true when the variable is unset, because an unset value is undefined, not null. The providers page reports payment webhooks as configured, every Stripe event then fails verification, and payments silently never get marked paid.
+
+Medium
+
+3. Drivers aren't told about payouts. No notice goes out when a driver payout is issued, when a hand-off share is paid, or when Stripe reverses a payout. The only record is the audit history, which drivers don't usually check.
+4. Stores aren't told about refunds or waivers. Credit refunds, overpayment refunds and balances waived under the card minimum are all recorded on the shipment, but the store isn't notified.
+5. Credit amounts reach people who shouldn't see them. When a claim is decided, every store-team member and the driver get the audit text, for example "Broker resolved customer claim: credit ($45.00 credit)". That includes team members without billing access, who aren't supposed to see money amounts.
+
+Low
+
+6. Expiry reminders go out for documents that have already been replaced. If a driver has uploaded a newer approved document of the same type, they still get "expires soon" reminders for the old one.
+
+Want me to fix these? My planned fixes:
+I fixed all 6. The unit tests pass (exit code 0), every file passes a syntax check, and the linter reports no errors. I also ran a quick standalone check of the amount masking. Nothing has run against Stripe or your database yet.
+
+1. Driver Stripe-account events are accepted. The server now also verifies events with STRIPE_CONNECT_WEBHOOK_SECRET, alongside STRIPE_WEBHOOK_SECRET, so a single endpoint URL works for both webhooks. The providers page now shows whether this second secret is set.
+2. The "webhooks configured" status is accurate. It's only true when at least one secret is actually set. Before, an unset STRIPE_WEBHOOK_SECRET showed as configured.
+3. Drivers are told about payouts. They're notified when their payout is sent (including any adjustment and the reason), when a hand-off share is paid, and when a payout is reversed.
+4. Stores are told about refunds and waivers. Only the store's team members with billing access are notified, for credit refunds, overpayment refunds, and balances that are fully credited or waived under the card minimum.
+5. Amounts are removed from claim notifications for people without billing access. Drivers and team members without billing access get the same message with amounts taken out, for example "Broker resolved customer claim: credit".
+6. Expiry reminders skip replaced documents. No reminder is sent if a newer approved or pending document of the same type exists.
+
+Stripe setup:
+- Add a Connect webhook in the Stripe dashboard, pointing at the same /api/webhooks/stripe URL and subscribed to account.updated.
+- Put that endpoint's signing secret in STRIPE_CONNECT_WEBHOOK_SECRET.
+
+Rebuild with ./start-yyc.sh. Nothing is committed.
+
+✻ Worked for 1m 20s · done 7:40 PM
+
+https://www.youtube.com/watch?v=9Ackau8135w&pp=ugUHEgVlbi1HQg%3D%3D
+
+❯ find more edge case bugs
+
+First, I'll check the change I made last round. The new amount masking applies to every driver message, and that includes the job offer that's supposed to show the driver their own rate:
+
+  Searched for 1 pattern
+
+Confirmed: my masking from last round strips the driver's rate from their own job offer. I also found that document expiry dates are judged by UTC rather than Calgary time, plus a Stripe account-status issue. That's 4 bugs in total. I haven't changed any code.
+
+High
+
+1. Job offers no longer show the driver's rate. (from my change last round) The new masking runs on every message to a driver (src/server.js:79), after the offer message has been built (:69). Drivers now get "New job offer: … · an amount driver rate", so they can't see what the job pays before accepting. Only audit-text messages should be masked, not messages written for a specific role.
+
+Medium
+
+2. Documents expire around 5–6 pm on their last valid day. Expiry checks use PostgreSQL's CURRENT_DATE, which is UTC in your Docker setup. Calgary is 6–7 hours behind UTC, so a document valid "through November 12" is treated as expired from about 5 pm Calgary time (6 pm in summer) on November 12. The driver loses approval mid-afternoon, and their jobs that haven't been picked up go back to dispatch. The same UTC date affects these places:
+   - the expiry sweep (src/storage/documents.js:195)
+   - document approval (:162)
+   - the compliance check behind driver approval (src/store.js:1277)
+   - the reminders (src/server.js:275)
+   - the expiring-documents list (documents.js:143)
+3. Stripe's routine verification can wrongly pause a driver's payouts. While Stripe verifies a new account, it reports transfers as pending. The account.updated handler treats anything but active as not ready, so it sets stripe_onboarded = false and sends "Action needed for payouts" even when Stripe needs nothing from the driver. Payouts are blocked until Stripe finishes verifying.
+
+Low
+
+4. Store team members can't leave a team themselves. Only the owner can remove a member. Someone who has left the business stays attached to that store and keeps receiving its shipment notifications until the owner acts.
+
+Want me to fix these? My planned fixes:
+1. Mask amounts only in audit-text messages, so drivers see their rate again.
+2. Use Calgary's date in every expiry check.
+3. Only switch payouts off and alert the driver when Stripe actually needs something from them.
+4. Add a "Leave team" option for members.
+
+✻ Crunched for
+I found 5 gaps in the broker's admin screens: features the server supports that have no usable screen. I haven't changed any code.
+
+High
+
+1. Brokers approve documents without seeing them. The pending-documents list shows only the filename, type, status and expiry, with Approve and Reject buttons. There's no button to open the file, and no indication of whose document it is. Brokers are approving licences and insurance they can't look at, and that approval now decides who can be dispatched.
+2. There's no way to recover a lost authenticator, so brokers can be permanently locked out. MFA is required for brokers, but:
+   - Backup codes are shown once in a browser alert() box that's easy to dismiss without saving.
+   - There's no screen to regenerate backup codes or turn MFA off; /api/mfa/backup-codes/regenerate and /api/mfa/disable exist but nothing uses them.
+   - There's no way for one broker to reset another's MFA.
+
+   A broker who loses their phone and backup codes can never sign in again.
+
+Medium
+
+3. Brokers can't see which documents are about to expire. /api/admin/documents/expiring exists, but no screen uses it. Drivers now get reminders, but brokers have no view of coming lapses across their driver pool.
+4. Only the newest 250 accounts can be managed. /api/admin/accounts returns the latest 250 with no search or paging. Older accounts can't be suspended or restored from the app.
+5. Brokers can't help users stuck at email verification. If a store's email bounces or never arrives, a broker has no way to resend the code or confirm the account by hand, even though the accounts list shows "Unverified".
+
+Want me to fix these? My planned fixes:
+1. Show each pending document's owner, with a "View" button that opens the file.
+2. Add an MFA section to the profile: backup codes shown on screen with a copy button and an "I've saved these" confirmation, plus buttons to regenerate codes and turn MFA off. Add a broker-only "Reset MFA" action for another broker's account, recorded in the audit history.
+3. Add an "Expiring in 30
+The frontend lint shows the same six known implicit globals as before and nothing new.
+
+I fixed all 5. The unit tests pass (exit code 0), every file passes a syntax check, and the linter found no new problems. Nothing has run against your database yet.
+
+1. Brokers can see documents before approving them.
+   - Each pending document now shows its owner's name and email, with a "View" button that opens the file.
+   - The new expiring list (item 3) has View buttons too.
+2. A lost authenticator can be recovered.
+   - Backup codes are shown on screen with a "Copy codes" button. The screen can only be closed after ticking "I have saved these codes".
+   - A new "Two-step sign-in" section on the profile shows how many backup codes are left, can generate new ones, and lets stores and drivers turn MFA off with their password and a code.
+   - Brokers can't turn off their own required MFA; the server refuses it too.
+   - A broker can reset MFA on another account with "Reset MFA". This signs that person out everywhere, notifies them, and is recorded in the audit history. Brokers can't reset their own.
+3. Expiring documents are visible. The broker admin page has a "Documents expiring in 30 days" list.
+4. Accounts can be searched and paged. The accounts list searches by name or email and shows 50 at a time, with "Newer" and "Older" buttons.
+5. Brokers can help users stuck at verification. Unverified accounts get "Resend code" and "Mark verified" buttons. Marking verified asks for confirmation, is recorded in the audit history, and tells the user they can now sign in.
+
+"Mark verified" and "Reset MFA" both ask the broker to confirm who the person is first. Make sure your team actually checks identity before using them, because either one could otherwise be used to take over an account.
+
+Rebuild with ./start-yyc.sh. Nothing is committed.

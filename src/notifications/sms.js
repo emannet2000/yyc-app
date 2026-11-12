@@ -24,10 +24,28 @@ if (accountSid && authToken && fromNumber) {
  * @param {string} message - SMS message body (max 1600 chars)
  * @returns {Promise<Object>} Twilio message response
  */
+/**
+ * Normalise a phone number to E.164 for Twilio. Numbers without a country code are treated
+ * as North American (+1), which covers local Calgary formats like "403-555-1234".
+ * @returns {string|null} E.164 number, or null when it cannot be interpreted
+ */
+export function toE164(phone) {
+  const raw = String(phone || '').trim();
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, '');
+  if (raw.startsWith('+')) return digits.length >= 8 && digits.length <= 15 ? `+${digits}` : null;
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  return null;
+}
+
 export async function sendSMS(to, message) {
   if (!twilioClient) {
     throw new Error('Twilio not configured');
   }
+  const original = to;
+  to = toE164(to);
+  if (!to) throw new Error(`Phone number "${original}" cannot be used for SMS`);
 
   try {
     const response = await twilioClient.messages.create({

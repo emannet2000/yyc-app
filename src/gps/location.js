@@ -23,12 +23,30 @@ export async function recordLocation(data) {
     altitude = null
   } = data;
 
+  const num = (value, label, min, max, required = false) => {
+    if (value == null || value === '') {
+      if (required) throw new RangeError(`${label} is required`);
+      return null;
+    }
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < min || n > max) throw new RangeError(`${label} must be between ${min} and ${max}`);
+    return n;
+  };
+  const values = [
+    num(latitude, 'latitude', -90, 90, true),
+    num(longitude, 'longitude', -180, 180, true),
+    num(accuracy, 'accuracy', 0, 100000),
+    num(speed, 'speed', 0, 100),
+    num(heading, 'heading', 0, 360),
+    num(altitude, 'altitude', -500, 10000)
+  ];
+
   const id = randomUUID();
 
   await query(
     `INSERT INTO gps_locations (id, shipment_id, driver_id, latitude, longitude, accuracy, speed, heading, altitude, recorded_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
-    [id, shipmentId, driverId, latitude, longitude, accuracy, speed, heading, altitude]
+    [id, shipmentId, driverId, ...values]
   );
 
   return await queryOne('SELECT * FROM gps_locations WHERE id = $1', [id]);
@@ -57,6 +75,8 @@ export async function getLatestLocation(shipmentId) {
  */
 export async function getLocationHistory(shipmentId, options = {}) {
   const { limit = 100, since = null } = options;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new RangeError('limit must be between 1 and 1000');
+  if (since != null && !Number.isFinite(Date.parse(since))) throw new RangeError('since must be a valid date');
 
   let sql = `SELECT * FROM gps_locations WHERE shipment_id = $1`;
   const params = [shipmentId];
@@ -86,7 +106,7 @@ export async function getActiveShipmentLocations() {
        s.data as shipment_data
      FROM gps_locations gl
      JOIN shipments s ON gl.shipment_id = s.id
-     WHERE s.status IN ('in_transit', 'picked_up')
+     WHERE s.status = 'In transit'
      ORDER BY gl.shipment_id, gl.recorded_at DESC`
   );
 }

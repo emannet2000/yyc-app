@@ -85,6 +85,25 @@ export async function deleteSession(token) {
 }
 
 /**
+ * Invalidate every session a user created before now (e.g. after a password reset).
+ * Kept for the 7-day maximum session lifetime.
+ * @param {string} userId - User ID
+ */
+export async function revokeUserSessions(userId) {
+  // Kept for the 7-day maximum session lifetime, so every older session stays revoked.
+  await redis.setex(`sessions_revoked_before:${userId}`, 7 * 24 * 3600, String(Date.now()));
+}
+
+/**
+ * @param {string} userId - User ID
+ * @returns {Promise<number|null>} epoch ms before which this user's sessions are invalid
+ */
+export async function getSessionsRevokedAt(userId) {
+  const value = await redis.get(`sessions_revoked_before:${userId}`);
+  return value ? Number(value) : null;
+}
+
+/**
  * Clean up expired sessions (handled automatically by Redis TTL)
  * This is a no-op but kept for API compatibility
  */

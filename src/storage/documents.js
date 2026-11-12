@@ -1,6 +1,6 @@
 import { query, queryOne, queryAll } from '../db/postgres.js';
 import { randomUUID } from 'node:crypto';
-import { getUploadUrl, getDownloadUrl, deleteDocument as deleteFromS3 } from './s3.js';
+import { getUploadUrl, getDownloadUrl, deleteDocument as deleteFromS3, headObject } from './s3.js';
 
 /**
  * Documents Module for YYC Brokers
@@ -21,6 +21,23 @@ export async function createUploadUrl(userId, documentType, fileExtension) {
   const uploadId = randomUUID();
 
   return { uploadUrl, uploadId, s3Key: key };
+}
+
+/**
+ * Remove an uploaded file that will not be recorded (e.g. too large).
+ * @param {string} s3Key - Object key
+ */
+export async function discardUpload(s3Key) {
+  await deleteFromS3(s3Key);
+}
+
+/**
+ * Confirm an uploaded file exists in storage.
+ * @param {string} s3Key - Object key returned with the upload URL
+ * @returns {Promise<{size: number|null, contentType: string|null}|null>}
+ */
+export async function storedObject(s3Key) {
+  return await headObject(s3Key);
 }
 
 /**
@@ -123,8 +140,8 @@ export async function getExpiringDocuments() {
      FROM documents d
      JOIN users u ON d.user_id = u.id
      WHERE d.expiry_date IS NOT NULL
-       AND d.expiry_date <= CURRENT_DATE + INTERVAL '30 days'
-       AND d.expiry_date > CURRENT_DATE
+       AND d.expiry_date <= (NOW() AT TIME ZONE 'America/Edmonton')::date + 30
+       AND d.expiry_date > (NOW() AT TIME ZONE 'America/Edmonton')::date
        AND d.status = 'approved'
      ORDER BY d.expiry_date ASC`
   );
@@ -138,14 +155,15 @@ export async function getExpiringDocuments() {
  * @returns {Promise<Object>}
  */
 export async function approveDocument(documentId, adminId, notes = null) {
-  await query(
+  // Only pending documents can be approved; an expired one must be re-uploaded.
+  const result = await query(
     `UPDATE documents
      SET status = 'approved', reviewed_by = $1, reviewed_at = NOW(), notes = $2
-     WHERE id = $3`,
+     WHERE id = $3 AND status = 'pending' AND (expiry_date IS NULL OR expiry_date >= (NOW() AT TIME ZONE 'America/Edmonton')::date)
+     RETURNING id`,
     [adminId, notes, documentId]
   );
-
-  return await getDocument(documentId);
+  return result.rowCount ? await getDocument(documentId) : null;
 }
 
 /**
@@ -156,14 +174,29 @@ export async function approveDocument(documentId, adminId, notes = null) {
  * @returns {Promise<Object>}
  */
 export async function rejectDocument(documentId, adminId, notes) {
-  await query(
+  // Pending documents can be rejected, and approved ones revoked (e.g. found invalid later).
+  const result = await query(
     `UPDATE documents
      SET status = 'rejected', reviewed_by = $1, reviewed_at = NOW(), notes = $2
-     WHERE id = $3`,
+     WHERE id = $3 AND status IN ('pending', 'approved')
+     RETURNING id`,
     [adminId, notes, documentId]
   );
+  return result.rowCount ? await getDocument(documentId) : null;
+}
 
-  return await getDocument(documentId);
+/**
+ * Mark every approved document past its expiry date as expired.
+ * @returns {Promise<Array<{id: string, user_id: string, type: string}>>} the expired documents
+ */
+export async function expireDocuments() {
+  const result = await query(
+    `UPDATE documents SET status = 'expired'
+     -- Calgary's date, not the database's UTC date: a document is valid through its whole last day.
+     WHERE status IN ('approved', 'pending') AND expiry_date IS NOT NULL AND expiry_date < (NOW() AT TIME ZONE 'America/Edmonton')::date
+     RETURNING id, user_id, type`
+  );
+  return result.rows;
 }
 
 /**

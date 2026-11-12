@@ -24,3 +24,37 @@ body{background:#f2f5f9}.main{background:linear-gradient(140deg,#f8fafc 0%,#f0f3
 :root{--accent-gold:#c7a66b;--accent-gold-light:#e9d4a6;--accent-gold-ink:#8d6b33;--gold:#c7a66b}
 .side .brandlogo img{border-color:#cfb887;box-shadow:0 5px 18px #07142650,0 0 0 3px #c6a66b0b}.side .brandword{color:#f4e9d3}.side .brandword small{color:#c4b28f}.side nav button.active{border-left-color:#d1b077;background:linear-gradient(90deg,#cfac6818,#ffffff06)}.side nav button.active .ico{color:#dec18b}.sidebottom b{color:#e0d3bc}.sidebottom span{color:#cbb58b!important}.commandbar{border-left-color:#c7a66b}.commandbar b{color:#92713d}.commandlinks button.selected{box-shadow:inset 0 -2px #d0b17b}.dmetrics{border-top-color:#c6ad7c}.dmetric:first-child strong{color:#a58247}.fleetitem.sel{box-shadow:inset 3px 0 #c1a06a}.maptoolbar button.selected{box-shadow:inset 0 -2px #d2b67d}.tabrail button.selected,.caseheader .tabrail button.selected{border-bottom:2px solid #caae76}.casemetrics div{border-top-color:#d2bd94}.casecontent .versionnote{border-left-color:#c3a167;background:#fbf7ef;color:#8a744e}.caseheader{border-top-color:#bc9a61}.caseheader .eyebrow{color:#927b54}.casecontact b{color:#345577}.btn.gold,.storewelcome .btn.gold{background:linear-gradient(135deg,#ead5aa,#c8a56b);border:1px solid #c1a06a;color:#243b58;box-shadow:0 2px 6px #4b34121a,inset 0 1px #fff5db90}.btn.gold:hover,.storewelcome .btn.gold:hover{background:linear-gradient(135deg,#efdfbc,#d1b37d);color:#1b3350}.storewelcome{border-color:#60718a;border-top:2px solid #c8aa74}.storewelcome .eyebrow{color:#d8c49c}.welcomeaside img{border:1px solid #d3bb8d;box-shadow:0 6px 18px #05182d30,0 0 0 4px #c7a66b0b}.storeaction{border-top-color:#c7a66b}.movingcard{border-top-color:#bca274}.movingicon{background:#f5f0e6;color:#a2814e}.storestepbar div.complete{border-color:#b99a65;color:#537193}.steps span.on{border-color:#bea06a;color:#365777}.role.selected{box-shadow:inset 0 -2px #d0b37b}.role.selected .ico{color:#a08049}.hero h1 span{color:#dfc493}.hero .eyebrow:before{background:#c9ac76}.hero .brandlogo img{border:1px solid #d4bd91}.hero .brandword small{color:#cfbf9d}.herofoot{border-top-color:#cab07b35}.herofoot span:first-child{color:#d5c39e}.phonehead{border-top-color:#c7a66b}.phonebrand small{color:#a28759}.phonesignal{border-top-color:#d9cbae}.phonehead .toggle{box-shadow:0 0 0 1px #ba9a6230}.documentlogo{border-color:#d4be95}.proofpreview{border-color:#cbb68e;background:linear-gradient(145deg,#fff,#f8f6f0)}.proofpreview .eyebrow{color:#987b49}.shipmenttile:hover{border-color:#c5b18c}.schedulejob:hover{border-color:#c5b18c}.changecontrol{border-left-color:#bea06c}.archivedquote{border-left:2px solid #c7aa77}.quicksearch:focus-visible{outline-color:#b99a65}.searchresult:hover{background:#f8f6f0}.searchresulticon{background:#f4f0e6;color:#a08655}.caseheader h1 span{color:#bca475!important}.livepill{border:1px solid #d6c6a450}.casefoot{border-top-color:#d9cdb5}.welcomeaside .welcomestats b{color:#ead8b5}.maplabel{border-color:#d9cfbb}.fleetlist> .row>h2:after{content:'';display:block;width:22px;height:2px;background:#cfb07a;margin-top:8px}
 @media(max-width:760px){.side nav button.active{box-shadow:inset 0 2px #c9ab73}.phonehead{border-top-color:#c7a66b}.commandbar{border-left-color:#c7a66b}}
+/* Role-separated portals */
+.portalchooser{min-height:100vh;display:flex;flex-direction:column;background:radial-gradient(circle at 85% 8%,#2c5a4d 0,#173c34 40%,#10283f 100%);color:#fff;padding:26px clamp(20px,5vw,64px) 40px}
+.pchooserhead{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;max-width:1240px;width:100%;margin:0 auto}
+.portalchooser .brandlogo{flex-direction:row;align-items:center;padding:0;gap:14px;color:#fff}
+.portalchooser .brandlogo img{width:54px;height:54px}
+.portalchooser .brandword{color:#fff;text-align:left}
+.pchooserlinks{display:flex;gap:16px;align-items:center}
+.pchooserlinks .textbtn{color:#e5b975}
+.pchooserbody{max-width:1240px;width:100%;margin:auto;padding-top:40px}
+.pchooserintro{max-width:720px}
+.pchooserintro h1{font-size:clamp(38px,6vw,64px);letter-spacing:-2.5px;line-height:1.02;margin:18px 0;color:#fff}
+.pchooserintro p{color:#c9d7cf;font-size:15px;max-width:600px}
+.portalcontinue{display:inline-flex;gap:10px;align-items:center;margin-top:22px;padding:11px 18px;border:1px solid #ffffff45;border-radius:99px;color:#fff;text-decoration:none;font-weight:650;font-size:12px}
+.portalcontinue:hover{background:#ffffff14}
+.portalcards{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:40px}
+.portalcard{position:relative;display:flex;flex-direction:column;gap:12px;padding:26px;border-radius:16px;background:#fffdf8;color:var(--ink);text-decoration:none;border:1px solid #ffffff30;box-shadow:0 18px 50px #0003;transition:transform .15s ease,box-shadow .15s ease}
+.portalcard:hover{transform:translateY(-4px);box-shadow:0 24px 60px #0004}
+.portalcard .eyebrow{color:#77857e}
+.portalcard h2{font-size:24px;letter-spacing:-.7px;margin-top:auto}
+.portalcard p{color:#5d6d66;font-size:12px;line-height:1.7}
+.portalicon{display:inline-flex;width:48px;height:48px;border-radius:12px;align-items:center;justify-content:center;background:#e9efe9;color:#214e43;margin-bottom:8px}
+.portalicon .ico{width:24px;height:24px}
+.portalgo{font-size:11px;font-weight:750;color:#214e43;letter-spacing:.5px;margin-top:10px}
+.portalcard.store .portalicon{background:#e7efe4;color:#3d6b45}
+.portalcard.driver .portalicon{background:#e7edf5;color:#315a8c}
+.portalcard.broker .portalicon{background:#f2eadf;color:#8a6428}
+.portalnote{margin-top:26px;font-size:11px;color:#9fb3a8}
+.portalswitch{display:flex;flex-direction:column;line-height:1.25;text-decoration:none;color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:9px;padding:7px 12px;margin-right:6px}
+.portalswitch b{font-size:11px}
+.portalswitch span{font-size:9px;color:var(--muted);letter-spacing:.3px}
+.singlerole{grid-template-columns:1fr!important}
+body[data-role="driver"] .portalswitch{border-color:#c9d7e8}
+body[data-role="broker"] .portalswitch{border-color:#e6d9c4}
+@media(max-width:900px){.portalcards{grid-template-columns:1fr}.pchooserhead{flex-direction:column}.pchooserintro h1{font-size:42px}}

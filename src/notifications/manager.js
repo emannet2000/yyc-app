@@ -151,12 +151,44 @@ export async function notifyShipmentUpdate(userId, phoneNumber, shipmentId, even
   const row = await queryOne('SELECT notification_preferences FROM users WHERE id = $1', [userId]);
   const preferences = row?.notification_preferences || { push: true, sms: false, email: true };
   const results = {};
-  if (preferences.push && firebase.isConfigured()) results.push = await sendToUser(userId, notification, data);
-  if (preferences.sms && phoneNumber && sms.isConfigured()) results.sms = await sms.sendSMS(phoneNumber, smsMessage);
+  // Each channel is independent: a failed SMS (e.g. bad number) must not cancel the email.
+  const attempt = async (channel, send) => {
+    try { results[channel] = await send(); }
+    catch (error) { results[channel] = { error: error.message }; console.warn(`[Notifications] ${channel} failed for ${userId}:`, error.message); }
+  };
+  if (preferences.push && firebase.isConfigured()) await attempt('push', () => sendToUser(userId, notification, data));
+  if (preferences.sms && phoneNumber && sms.isConfigured()) await attempt('sms', () => sms.sendSMS(phoneNumber, smsMessage));
   if (preferences.email && emailClient.isConfigured()) {
-    const account = await queryOne('SELECT email FROM users WHERE id = $1', [userId]);
-    if (account?.email) results.email = await emailClient.sendEmail({ to: account.email, subject: notification.title, text: notification.body });
+    await attempt('email', async () => {
+      const account = await queryOne('SELECT email FROM users WHERE id = $1', [userId]);
+      return account?.email ? await emailClient.sendEmail({ to: account.email, subject: notification.title, text: notification.body }) : null;
+    });
   }
+  return results;
+}
+
+/**
+ * Notify a user about their account (approvals, documents, team access, payouts).
+ * Respects their channel preferences; each channel is attempted independently.
+ * @param {string} userId - Recipient
+ * @param {string} title - Short title
+ * @param {string} body - Message
+ * @param {Object} options - { email } to send to an address other than the account's
+ */
+export async function notifyAccount(userId, title, body, options = {}) {
+  const row = await queryOne('SELECT email, profile, notification_preferences FROM users WHERE id = $1', [userId]);
+  if (!row) return {};
+  const preferences = row.notification_preferences || { push: true, sms: false, email: true };
+  const results = {};
+  const attempt = async (channel, send) => {
+    try { results[channel] = await send(); }
+    catch (error) { results[channel] = { error: error.message }; console.warn(`[Notifications] ${channel} failed for ${userId}:`, error.message); }
+  };
+  if (preferences.push && firebase.isConfigured()) await attempt('push', () => sendToUser(userId, { title, body }, { type: 'account' }));
+  const phone = row.profile?.phone;
+  if (preferences.sms && phone && sms.isConfigured()) await attempt('sms', () => sms.sendSMS(phone, `YYC Brokers: ${body}`));
+  const to = options.email || row.email;
+  if ((preferences.email || options.email) && to && emailClient.isConfigured()) await attempt('email', () => emailClient.sendEmail({ to, subject: title, text: body }));
   return results;
 }
 

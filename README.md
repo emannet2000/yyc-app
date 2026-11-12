@@ -27,6 +27,22 @@ Open **http://localhost:3000**. Log in with the broker account you created.
 
 Store owners and drivers can register through the **Register** tab. A driver must provide truck information and wait for the broker's manual approval.
 
+### Separate role portals
+
+Each role has its own entry point, sign-in screen, dashboard and navigation. The root page is a portal chooser; a signed-in user is sent straight to their role's home unless they open `/?switch=1`.
+
+| Role | Portal | Demo portal |
+| --- | --- | --- |
+| Store owner | `/owner` (alias `/store`) | `/demo/owner` |
+| Driver | `/driver` | `/demo/driver` |
+| Broker / operations | `/broker` | `/demo/broker` |
+
+- Store owners register in `/owner`; drivers register in `/driver`.
+- Broker accounts are created by the administrator (`npm run setup-admin`), so the broker portal has no registration form.
+- Visiting another role's portal while signed in redirects to your own portal, and role navigation only exposes that role's pages.
+
+The `/demo/` route mirrors the same split with fictional records (`/demo/`, `/demo/owner`, `/demo/driver`, `/demo/broker`).
+
 If port 3000 is already in use:
 
 ```bash
@@ -168,7 +184,9 @@ src/server.js       HTTP server, cookies, origin/CSRF and routes
 src/store.js        SQLite schema, authentication and business rules
 public/             Branded browser interface with server adapter
 public/runtime.js   Server-backed frontend behavior
+public/portal.js    Role portals, guards and role-specific pages for the real app
 public/demo/        Original fictional screen prototype
+public/demo/portals.js  Role portals for the /demo prototype
 scripts/            Broker setup and database backup
 test/              Integration tests
 ```

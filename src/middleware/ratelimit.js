@@ -12,7 +12,7 @@ import { AppError } from '../store.js';
 const RATE_LIMITS = {
   // Authentication endpoints (login, register)
   auth: {
-    limit: 30,          // 30 requests
+    limit: 60,          // 60 requests per client address (accounts have their own limit)
     window: 900,        // per 15 minutes (900 seconds)
     message: 'Too many account attempts. Try again in 15 minutes.'
   },
@@ -42,13 +42,27 @@ const RATE_LIMITS = {
  * @param {Function} keyFn - Optional function to generate custom key (receives req)
  * @returns {Function} Express middleware
  */
+/**
+ * The client's IP. Behind a reverse proxy or load balancer set TRUST_PROXY to the number
+ * of proxies in front of the app (or "true" for one); otherwise every client shares the
+ * proxy's address. Only the proxy-appended entries of X-Forwarded-For are trusted.
+ */
+export function clientIp(req) {
+  const setting = process.env.TRUST_PROXY;
+  const hops = setting === 'true' ? 1 : Number.parseInt(setting || '0', 10) || 0;
+  const remote = req.socket.remoteAddress || 'unknown';
+  if (hops < 1) return remote;
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',').map(part => part.trim()).filter(Boolean);
+  return forwarded[forwarded.length - hops] || remote;
+}
+
 export function createRateLimiter(type = 'api', keyFn = null) {
   const config = RATE_LIMITS[type] || RATE_LIMITS.api;
 
   return async (req, res, next) => {
     try {
       // Generate rate limit key
-      const ip = req.socket.remoteAddress || 'unknown';
+      const ip = clientIp(req);
       const customKey = keyFn ? keyFn(req) : null;
       const key = `ratelimit:${type}:${customKey || ip}`;
 

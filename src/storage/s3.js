@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadBucketCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import crypto from 'node:crypto';
 
@@ -16,6 +16,8 @@ let s3Client = null;
 if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
   s3Client = new S3Client({
     region,
+    // Optional S3-compatible endpoint (MinIO, R2…); the CSP allows the same origin for uploads.
+    ...(process.env.AWS_S3_ENDPOINT ? { endpoint: process.env.AWS_S3_ENDPOINT, forcePathStyle: true } : {}),
     credentials: {
       accessKeyId: process.env.AWS_ACCESS_KEY_ID,
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
@@ -33,6 +35,21 @@ if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
  * @param {string} fileExtension - File extension (pdf, jpg, png)
  * @returns {Promise<{uploadUrl: string, key: string}>}
  */
+/**
+ * Size and type of an uploaded object, or null when it does not exist.
+ * @param {string} key - S3 object key
+ */
+export async function headObject(key) {
+  if (!s3Client) return null;
+  try {
+    const head = await s3Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    return { size: head.ContentLength ?? null, contentType: head.ContentType || null };
+  } catch (error) {
+    if (error?.$metadata?.httpStatusCode === 404 || error?.name === 'NotFound') return null;
+    throw error;
+  }
+}
+
 export async function getUploadUrl(userId, documentType, fileExtension) {
   if (!s3Client) {
     throw new Error('S3 not configured. Set AWS credentials in environment variables.');

@@ -28,3 +28,37 @@ body{background:#f2f5f9}.main{background:linear-gradient(140deg,#f8fafc 0%,#f0f3
 .authloading{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:22px;background:#142f50;color:#fff;padding:30px;text-align:center}.unconnectedmap{padding:40px 20px;text-align:center;border:1px dashed #c7d2e2;border-radius:10px;background:repeating-linear-gradient(45deg,#f8fafd,#f8fafd 15px,#f5f8fc 15px,#f5f8fc 30px);color:#45658c}.unconnectedicon{display:inline-block;padding:15px;background:#e9eff7;border-radius:50%;margin-bottom:18px}.unconnectedicon .ico{width:28px;height:28px}.unconnectedmap h2{font-size:19px}.unconnectedmap p{color:#8295ae;font-size:12px;line-height:1.8;margin:15px 0 20px}.authright header a{font-size:11px;text-decoration:none}.grid2>.card .btn{margin-right:5px}.casecontent>.card+.card{margin-top:18px}
 /* Server-backed workflow enhancements */
 .sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.shipment-tools{display:grid;grid-template-columns:minmax(220px,2fr) minmax(150px,1fr) auto auto;gap:10px;align-items:center;margin:14px 0}.shipment-tools label{margin:0}.shipment-tools input,.shipment-tools select{min-height:42px}.reportbars{display:grid;gap:14px;margin-top:20px}.reportbar{display:grid;grid-template-columns:150px 1fr 40px;gap:12px;align-items:center}.reportbar>div{height:12px;background:#edf1eb;border-radius:99px;overflow:hidden}.reportbar i{display:block;height:100%;background:#42765e;border-radius:99px}.notification-list{display:grid;gap:10px;margin-top:18px}.notification-item{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:15px;border:1px solid var(--line);border-radius:10px}.notification-item.unread{border-left:4px solid #c49b58;background:#fbfaf6}.notification-item p{margin:5px 0}.schedule-stops{margin:15px 0 0 20px}.schedule-stops li{padding:4px 0}.reportbar span{font-size:12px}@media(max-width:760px){.shipment-tools{grid-template-columns:1fr 1fr}.shipment-tools label:first-child{grid-column:1/-1}.shipment-tools .btn{width:100%;padding:10px 6px;font-size:12px}.notification-item{align-items:flex-start;flex-direction:column}.reportbar{grid-template-columns:100px 1fr 30px}.reportbar span{font-size:11px}.schedule-stops{padding-right:8px}}
+/* Role-separated portals */
+.portalchooser{min-height:100vh;display:flex;flex-direction:column;background:radial-gradient(circle at 85% 8%,#2c5a4d 0,#173c34 40%,#10283f 100%);color:#fff;padding:26px clamp(20px,5vw,64px) 40px}
+.pchooserhead{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;max-width:1240px;width:100%;margin:0 auto}
+.portalchooser .brandlogo{flex-direction:row;align-items:center;padding:0;gap:14px;color:#fff}
+.portalchooser .brandlogo img{width:54px;height:54px}
+.portalchooser .brandword{color:#fff;text-align:left}
+.pchooserlinks{display:flex;gap:16px;align-items:center}
+.pchooserlinks .textbtn{color:#e5b975}
+.pchooserbody{max-width:1240px;width:100%;margin:auto;padding-top:40px}
+.pchooserintro{max-width:720px}
+.pchooserintro h1{font-size:clamp(38px,6vw,64px);letter-spacing:-2.5px;line-height:1.02;margin:18px 0;color:#fff}
+.pchooserintro p{color:#c9d7cf;font-size:15px;max-width:600px}
+.portalcontinue{display:inline-flex;gap:10px;align-items:center;margin-top:22px;padding:11px 18px;border:1px solid #ffffff45;border-radius:99px;color:#fff;text-decoration:none;font-weight:650;font-size:12px}
+.portalcontinue:hover{background:#ffffff14}
+.portalcards{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:40px}
+.portalcard{position:relative;display:flex;flex-direction:column;gap:12px;padding:26px;border-radius:16px;background:#fffdf8;color:var(--ink);text-decoration:none;border:1px solid #ffffff30;box-shadow:0 18px 50px #0003;transition:transform .15s ease,box-shadow .15s ease}
+.portalcard:hover{transform:translateY(-4px);box-shadow:0 24px 60px #0004}
+.portalcard .eyebrow{color:#77857e}
+.portalcard h2{font-size:24px;letter-spacing:-.7px;margin-top:auto}
+.portalcard p{color:#5d6d66;font-size:12px;line-height:1.7}
+.portalicon{display:inline-flex;width:48px;height:48px;border-radius:12px;align-items:center;justify-content:center;background:#e9efe9;color:#214e43;margin-bottom:8px}
+.portalicon .ico{width:24px;height:24px}
+.portalgo{font-size:11px;font-weight:750;color:#214e43;letter-spacing:.5px;margin-top:10px}
+.portalcard.store .portalicon{background:#e7efe4;color:#3d6b45}
+.portalcard.driver .portalicon{background:#e7edf5;color:#315a8c}
+.portalcard.broker .portalicon{background:#f2eadf;color:#8a6428}
+.portalnote{margin-top:26px;font-size:11px;color:#9fb3a8}
+.portalswitch{display:flex;flex-direction:column;line-height:1.25;text-decoration:none;color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:9px;padding:7px 12px;margin-right:6px}
+.portalswitch b{font-size:11px}
+.portalswitch span{font-size:9px;color:var(--muted);letter-spacing:.3px}
+.singlerole{grid-template-columns:1fr!important}
+body[data-role="driver"] .portalswitch{border-color:#c9d7e8}
+body[data-role="broker"] .portalswitch{border-color:#e6d9c4}
+@media(max-width:900px){.portalcards{grid-template-columns:1fr}.pchooserhead{flex-direction:column}.pchooserintro h1{font-size:42px}}

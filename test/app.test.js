@@ -5,12 +5,13 @@ import { randomUUID } from 'node:crypto';
 const enabled = Boolean(process.env.YYC_INTEGRATION_DATABASE_URL && process.env.YYC_INTEGRATION_REDIS_URL);
 test('PostgreSQL and Redis application integration', { skip: !enabled }, async () => {
   process.env.DATABASE_URL = process.env.YYC_INTEGRATION_DATABASE_URL;
+  process.env.ADMIN_MFA_OPTIONAL = 'true'; // the HTTP checks below use a broker without an authenticator
   process.env.REDIS_URL = process.env.YYC_INTEGRATION_REDIS_URL;
   const [store, serverModule, redisModule, websocketModule, databaseModule] = await Promise.all([
     import('../src/store.js'), import('../src/server.js'), import('../src/redis.js'), import('../src/websocket/server.js'), import('../src/db/postgres.js')
   ]);
   await store.initStore();
-  const { server } = serverModule.createApp({ secure: false });
+  const { server } = serverModule.createApp({ secure: false, publicOrigin: '' }); // the test serves on a random port
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const password = 'Integration-test-password-2048!';
@@ -23,6 +24,7 @@ test('PostgreSQL and Redis application integration', { skip: !enabled }, async (
     accountIds = [brokerPublic.id, storePublic.id, driverPublic.id];
     const broker = await store.login(emails[0], password), customer = await store.login(emails[1], password), driver = await store.login(emails[2], password);
     await store.approve(broker, driver.id);
+    driver.approved = true; // the session row was loaded before approval
     const shipment = await store.createShipment(customer, { pickup: 'Warehouse A, Calgary', destination: 'Store B, Calgary', stops: ['Stop A, Calgary | Receiver A | 13:00–16:00'], date: new Date(Date.now()+7*86400000).toISOString().slice(0,10), window: '13:00–16:00', goods: 'Palletized supplies', pallets: 2, kg: 500, type: 'Box truck', unloading: 'Dock', pickupContact: 'Dispatch', receivingContact: 'Store contact', hours: '09:00–17:00' });
     shipmentIds.push(shipment.id);
     let shipmentId = shipment.id;
@@ -33,6 +35,7 @@ test('PostgreSQL and Redis application integration', { skip: !enabled }, async (
     current = await store.act(broker, shipmentId, 'acceptBid', { version: current.version, driverId: driver.id });
     current = await store.act(driver, shipmentId, 'acceptJob', { version: current.version });
     current = await store.act(driver, shipmentId, 'pickup', { version: current.version });
+    current = await store.act(driver, shipmentId, 'arriveStop', { version: current.version, stopIndex: 0 });
     current = await store.act(driver, shipmentId, 'completeStop', { version: current.version, stopIndex: 0, receipt: 'STOP-1' });
     current = await store.act(driver, shipmentId, 'deliver', { version: current.version, pod: 'POD-1', recipient: 'Receiver' });
     assert.equal(current.status, 'Delivered');
@@ -52,11 +55,13 @@ test('PostgreSQL and Redis application integration', { skip: !enabled }, async (
     assert.equal(session.status, 200);
     const sessionData = await session.json();
     assert.equal(sessionData.user.role, 'admin');
-    const logout = await fetch(origin + '/api/logout', { method: 'POST', headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json', 'X-CSRF-Token': sessionData.csrf }, body: '{}' });
-    assert.equal(logout.status, 200);
     const providerCheck = await fetch(origin + '/api/admin/providers', { headers: { Cookie: cookie } });
     assert.equal(providerCheck.status, 200);
     assert.equal(typeof (await providerCheck.json()).providers.maps, 'boolean');
+    const logout = await fetch(origin + '/api/logout', { method: 'POST', headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json', 'X-CSRF-Token': sessionData.csrf }, body: '{}' });
+    assert.equal(logout.status, 200);
+    const afterLogout = await fetch(origin + '/api/session', { headers: { Cookie: cookie } });
+    assert.equal((await afterLogout.json()).user, null);
     const health = await fetch(origin + '/healthz');
     assert.equal(health.status, 200);
     assert.equal((await health.json()).database, 'connected');
@@ -65,6 +70,8 @@ test('PostgreSQL and Redis application integration', { skip: !enabled }, async (
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
     if (shipmentIds.length) await databaseModule.query('DELETE FROM shipments WHERE id = ANY($1::text[])', [shipmentIds]);
+    // Account-level audit rows (e.g. driver approval) reference the actor with ON DELETE RESTRICT.
+    if (accountIds.length) await databaseModule.query('DELETE FROM audit WHERE actor_id = ANY($1::uuid[])', [accountIds]);
     if (accountIds.length) await databaseModule.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [accountIds]);
     await redisModule.close();
     await databaseModule.close();

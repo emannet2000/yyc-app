@@ -54,7 +54,7 @@ export async function generateQRCode(otpAuthUrl) {
  * @param {string} secret - Base32 encoded secret
  * @param {string} token - 6-digit TOTP code
  * @param {number} window - Time window tolerance (default: 1 = ±30 seconds)
- * @returns {boolean} Whether the token is valid
+ * @returns {number|false} The matched time step, or false when invalid
  */
 export function verifyTOTP(secret, token, window = 1) {
   try {
@@ -73,7 +73,8 @@ export function verifyTOTP(secret, token, window = 1) {
       const expectedToken = totp.generate({ timestamp: timeOffset * 1000 });
 
       if (expectedToken === token) {
-        return true;
+        // Return the matched 30-second step (always > 0) so callers can reject replays.
+        return Math.floor(timeOffset / 30);
       }
     }
 
@@ -174,13 +175,15 @@ export async function verifyBackupCode(userId, code) {
     return false;
   }
 
-  // Remove used code
+  // Remove used code, but only if nobody else consumed a code since we read the list:
+  // two simultaneous logins with the same code cannot both succeed.
   hashedCodes.splice(index, 1);
 
-  await query(
-    'UPDATE users SET backup_codes = $1 WHERE id = $2',
-    [JSON.stringify(hashedCodes), userId]
+  const updated = await query(
+    'UPDATE users SET backup_codes = $1 WHERE id = $2 AND backup_codes = $3',
+    [JSON.stringify(hashedCodes), userId, user.backup_codes]
   );
+  if (!updated.rowCount) return false;
 
   console.log(`[MFA] Backup code used for user ${userId}, ${hashedCodes.length} codes remaining`);
 

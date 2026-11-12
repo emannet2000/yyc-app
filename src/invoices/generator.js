@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { billingTotals } from './billing.js';
 import { Readable } from 'node:stream';
 
 /**
@@ -127,18 +128,22 @@ export async function generateInvoice(shipment, store, driver) {
     currentY += 15;
     const totalsX = 420;
 
+    const totals = billingTotals(shipment.data);
     doc.fontSize(10).fillColor('#333');
+    if (totals.credits > 0) {
+      doc.text('Claim credits:', totalsX, currentY);
+      doc.text(`-$${totals.credits.toFixed(2)}`, amountX + 5, currentY);
+      currentY += 20;
+    }
     doc.text('Subtotal:', totalsX, currentY);
-    doc.text(`$${shipment.data.price.toFixed(2)}`, amountX + 5, currentY);
+    doc.text(`$${totals.subtotal.toFixed(2)}`, amountX + 5, currentY);
 
     currentY += 20;
-    const taxRate = 0.05; // 5% GST (Canada)
-    const taxAmount = shipment.data.price * taxRate;
     doc.text('GST (5%):', totalsX, currentY);
-    doc.text(`$${taxAmount.toFixed(2)}`, amountX + 5, currentY);
+    doc.text(`$${totals.tax.toFixed(2)}`, amountX + 5, currentY);
 
     currentY += 25;
-    const total = shipment.data.price + taxAmount;
+    const total = totals.total;
     doc.fontSize(12).fillColor('#1c3554');
     doc.rect(totalsX - 10, currentY - 5, 135, 25).fillAndStroke('#f0f0f0', '#1c3554');
     doc.fillColor('#000').text('TOTAL:', totalsX, currentY);
@@ -213,7 +218,7 @@ export function generateInvoiceStream(shipment, store, driver) {
   doc.moveDown(2);
 
   // Total
-  doc.fontSize(12).fillColor('#1c3554').text(`TOTAL: $${shipment.data.price.toFixed(2)} CAD`, {
+  doc.fontSize(12).fillColor('#1c3554').text(`TOTAL: $${billingTotals(shipment.data).total.toFixed(2)} CAD (incl. GST)`, {
     align: 'right'
   });
 

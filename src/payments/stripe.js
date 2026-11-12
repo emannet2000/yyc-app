@@ -6,7 +6,10 @@ import Stripe from 'stripe';
  */
 
 const secretKey = process.env.STRIPE_SECRET_KEY;
-const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
+// Events about drivers' connected accounts (e.g. account.updated) come from a separate
+// Connect webhook endpoint in Stripe, which has its own signing secret.
+const connectWebhookSecret = process.env.STRIPE_CONNECT_WEBHOOK_SECRET || '';
 
 let stripe = null;
 
@@ -44,7 +47,7 @@ export async function createPaymentIntent(amount, currency = 'cad', metadata = {
       ...metadata,
       platform: 'YYC Brokers'
     }
-  }, metadata.shipmentId ? { idempotencyKey: `yyc-shipment-payment-${metadata.shipmentId}` } : undefined);
+  }, metadata.shipmentId ? { idempotencyKey: `yyc-shipment-payment-${metadata.shipmentId}-${amountCents}` } : undefined);
 
   return {
     clientSecret: paymentIntent.client_secret,
@@ -53,6 +56,32 @@ export async function createPaymentIntent(amount, currency = 'cad', metadata = {
     currency: paymentIntent.currency,
     status: paymentIntent.status
   };
+}
+
+/**
+ * Cancel an unpaid PaymentIntent (e.g. its amount changed after a claim credit).
+ * @param {string} paymentIntentId - PaymentIntent ID
+ */
+export async function cancelPaymentIntent(paymentIntentId) {
+  if (!stripe) throw new Error('Stripe not configured.');
+  await stripe.paymentIntents.cancel(paymentIntentId);
+}
+
+/**
+ * Refund part of a captured payment.
+ * @param {string} paymentIntentId - PaymentIntent ID
+ * @param {number} amount - Amount in dollars
+ * @param {string} idempotencyKey - Stable key so a retry cannot refund twice
+ * @param {Object} metadata - Additional metadata
+ */
+export async function refundPayment(paymentIntentId, amount, idempotencyKey, metadata = {}) {
+  if (!stripe) throw new Error('Stripe not configured.');
+  const refund = await stripe.refunds.create({
+    payment_intent: paymentIntentId,
+    amount: Math.round(amount * 100),
+    metadata: { ...metadata, platform: 'YYC Brokers' }
+  }, { idempotencyKey });
+  return { refundId: refund.id, status: refund.status, amount: refund.amount / 100 };
 }
 
 /**
@@ -108,6 +137,24 @@ export async function createConnectAccount(email, metadata = {}) {
 }
 
 /**
+ * Check with Stripe whether a Connect account can actually receive transfers.
+ * @param {string} accountId - Stripe Connect account ID
+ * @returns {Promise<{ready: boolean, detailsSubmitted: boolean, transfers: string}>}
+ */
+export async function getConnectAccountStatus(accountId) {
+  if (!stripe) {
+    throw new Error('Stripe not configured.');
+  }
+  const account = await stripe.accounts.retrieve(accountId);
+  const transfers = account.capabilities?.transfers || 'inactive';
+  return {
+    ready: Boolean(account.details_submitted && transfers === 'active'),
+    detailsSubmitted: Boolean(account.details_submitted),
+    transfers
+  };
+}
+
+/**
  * Create an account link for Connect onboarding
  * @param {string} accountId - Stripe Connect account ID
  * @param {string} refreshUrl - URL to redirect if refresh needed
@@ -144,15 +191,17 @@ export async function createPayout(accountId, amount, metadata = {}) {
   // Convert dollars to cents
   const amountCents = Math.round(amount * 100);
 
+  const { idempotencyKey, ...transferMetadata } = metadata;
+  const key = idempotencyKey || (metadata.shipmentId ? `yyc-shipment-payout-${metadata.shipmentId}-${amountCents}` : null);
   const transfer = await stripe.transfers.create({
     amount: amountCents,
     currency: 'cad',
     destination: accountId,
     metadata: {
-      ...metadata,
+      ...transferMetadata,
       platform: 'YYC Brokers'
     }
-  });
+  }, key ? { idempotencyKey: key } : undefined);
 
   return {
     transferId: transfer.id,
@@ -170,16 +219,20 @@ export async function createPayout(accountId, amount, metadata = {}) {
  * @returns {Object} Parsed event
  */
 export function constructWebhookEvent(payload, signature) {
-  if (!stripe || !webhookSecret) {
+  const secrets = [webhookSecret, connectWebhookSecret].filter(Boolean);
+  if (!stripe || !secrets.length) {
     throw new Error('Stripe webhook secret not configured.');
   }
 
-  try {
-    const event = stripe.webhooks.constructEvent(payload, signature, webhookSecret);
-    return event;
-  } catch (err) {
-    throw new Error(`Webhook signature verification failed: ${err.message}`);
+  let lastError;
+  for (const secret of secrets) {
+    try {
+      return stripe.webhooks.constructEvent(payload, signature, secret);
+    } catch (err) {
+      lastError = err;
+    }
   }
+  throw new Error(`Webhook signature verification failed: ${lastError.message}`);
 }
 
 /**
@@ -195,7 +248,13 @@ export function isConfigured() {
  * @returns {boolean}
  */
 export function webhooksConfigured() {
-  return stripe !== null && webhookSecret !== null;
+  // An unset variable is undefined, not null: check for an actual secret.
+  return stripe !== null && Boolean(webhookSecret || connectWebhookSecret);
+}
+
+/** Whether driver (Connect) account events can be verified. */
+export function connectWebhooksConfigured() {
+  return stripe !== null && Boolean(connectWebhookSecret);
 }
 
 export async function verifyConnection() {

@@ -10,6 +10,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { initSchema, transaction, queryOne, queryAll } from './postgres.js';
 
 const sqliteFile = resolve(process.env.YYC_DATA_DIR || 'data', 'yyc.sqlite');
@@ -20,7 +21,9 @@ async function migrate() {
   // Open SQLite database
   let sqliteDb;
   try {
-    sqliteDb = new DatabaseSync(sqliteFile);
+    // DatabaseSync silently creates an empty file when it is missing, so check first.
+    if (!existsSync(sqliteFile)) throw new Error('not found');
+    sqliteDb = new DatabaseSync(sqliteFile, { readOnly: true });
     console.log(`✓ Connected to SQLite: ${sqliteFile}`);
   } catch (err) {
     console.log(`ℹ No existing SQLite database found at ${sqliteFile}`);
@@ -48,8 +51,10 @@ async function migrate() {
 
       for (const user of users) {
         await client.query(
-          `INSERT INTO users (id, email, password_hash, role, name, profile, approved, disabled, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          // Accounts from the SQLite app were already in use, so treat their email as verified;
+          // otherwise every migrated store and driver is locked out at login.
+          `INSERT INTO users (id, email, password_hash, role, name, profile, approved, disabled, email_verified, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9)
            ON CONFLICT (id) DO NOTHING`,
           [
             user.id,
@@ -90,27 +95,9 @@ async function migrate() {
       console.log(`✓ Migrated ${truckCount} trucks`);
 
       // 3. Migrate sessions (optional, they'll expire anyway)
-      console.log('Migrating sessions...');
-      const sessions = sqliteDb.prepare('SELECT * FROM sessions WHERE expires_at > ?').all(Date.now());
-      let sessionCount = 0;
+      // Sessions now live in Redis; SQLite sessions are not carried over and everyone signs in again.
+      console.log('ℹ Sessions are not migrated (they now live in Redis). Everyone must sign in again.');
 
-      for (const session of sessions) {
-        await client.query(
-          `INSERT INTO sessions (token_hash, user_id, csrf, expires_at)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (token_hash) DO NOTHING`,
-          [
-            session.token_hash,
-            session.user_id,
-            session.csrf,
-            session.expires_at
-          ]
-        );
-        sessionCount++;
-      }
-      console.log(`✓ Migrated ${sessionCount} active sessions`);
-
-      // 4. Migrate shipments
       console.log('Migrating shipments...');
       const shipments = sqliteDb.prepare('SELECT * FROM shipments').all();
       let shipmentCount = 0;
@@ -143,8 +130,12 @@ async function migrate() {
 
       for (const audit of audits) {
         await client.query(
+          // Re-running the migration must not duplicate history.
           `INSERT INTO audit (shipment_id, actor_id, event, created_at)
-           VALUES ($1, $2, $3, $4)`,
+           SELECT $1::text, $2::uuid, $3::text, $4::timestamptz
+           WHERE NOT EXISTS (
+             SELECT 1 FROM audit WHERE shipment_id IS NOT DISTINCT FROM $1::text AND actor_id IS NOT DISTINCT FROM $2::uuid
+               AND event = $3::text AND created_at = $4::timestamptz)`,
           [
             audit.shipment_id,
             audit.actor_id,
@@ -154,7 +145,7 @@ async function migrate() {
         );
         auditCount++;
       }
-      console.log(`✓ Migrated ${auditCount} audit records`);
+      console.log(`✓ Processed ${auditCount} audit records (already-migrated ones skipped)`);
 
       // 6. Migrate counters
       console.log('Migrating counters...');
@@ -163,13 +154,19 @@ async function migrate() {
 
       for (const counter of counters) {
         await client.query(
+          // Never move a counter backwards: that would reissue existing shipment IDs.
           `INSERT INTO counters (name, value)
            VALUES ($1, $2)
-           ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`,
+           ON CONFLICT (name) DO UPDATE SET value = GREATEST(counters.value, EXCLUDED.value)`,
           [counter.name, counter.value]
         );
         counterCount++;
       }
+      // Also keep the shipment counter ahead of every shipment already in PostgreSQL.
+      await client.query(
+        `UPDATE counters SET value = GREATEST(value, COALESCE((SELECT MAX(CAST(substr(id, 5) AS INTEGER)) FROM shipments WHERE id ~ '^YYC-[0-9]+$'), 0))
+         WHERE name = 'shipment'`
+      );
       console.log(`✓ Migrated ${counterCount} counters`);
     });
 

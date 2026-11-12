@@ -22,3 +22,9 @@ test('subscriptions reject revoked sessions, missing shipments and invalid room 
   }
   await assert.rejects(authorizeShipment('token', 'YYC-1001', { ...deps, getShipment: async () => null }));
 });
+test('store team members with read access may subscribe; others may not', async () => {
+  const member = { role: 'store', id: 'member1' };
+  const hasStorePermission = async (user, ownerId, permission) => user.id === 'member1' && ownerId === 'store1' && permission === 'shipments.read';
+  assert.equal((await authorizeShipment('token', 'YYC-1001', { ...dependencies(member), hasStorePermission })).id, 'member1');
+  await assert.rejects(authorizeShipment('token', 'YYC-1001', { ...dependencies({ role: 'store', id: 'outsider' }), hasStorePermission }));
+});

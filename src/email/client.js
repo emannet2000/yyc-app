@@ -14,6 +14,10 @@ if (!resendApiKey && process.env.NODE_ENV === 'production') {
 // Initialize Resend client
 const resend = resendApiKey ? new Resend(resendApiKey) : null;
 
+// Browser origin for links in emails. Set PUBLIC_ORIGIN to the address people actually open
+// (the local Docker stack serves http://localhost:3001).
+const appOrigin = () => (process.env.PUBLIC_ORIGIN || `http://localhost:${process.env.PORT || 3000}`).replace(/\/+$/, '');
+
 // Default "from" address
 const FROM_EMAIL = process.env.FROM_EMAIL || 'YYC Brokers <noreply@yycbrokers.com>';
 export function isConfigured() { return resend !== null; }
@@ -38,20 +42,24 @@ export async function sendEmail({ to, subject, html, text }) {
     console.log('[Email] Skipping email send (RESEND_API_KEY not configured)');
     console.log(`[Email] Would send to: ${to}`);
     console.log(`[Email] Subject: ${subject}`);
+    // Outside production, print the body so verification codes and reset links are usable locally.
+    if (process.env.NODE_ENV !== 'production') console.log(`[Email] Body: ${text || stripHtml(html)}`);
     return { id: 'dev-mode', success: true };
   }
 
   try {
-    const result = await resend.emails.send({
+    // resend v4 reports API failures in `error` instead of throwing.
+    const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
       to,
       subject,
       html,
       text: text || stripHtml(html)
     });
+    if (error) throw new Error(`Resend rejected the email: ${error.message || error.name || 'unknown error'}`);
 
     console.log(`[Email] Sent to ${to}: ${subject}`);
-    return result;
+    return data;
   } catch (error) {
     console.error('[Email] Failed to send:', error);
     throw error;
@@ -63,9 +71,14 @@ export async function sendEmail({ to, subject, html, text }) {
  * @param {string} html - HTML content
  * @returns {string} Plain text
  */
+/* User-entered text (names, addresses, receipts) must never become markup in our emails. */
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+}
+
 function stripHtml(html) {
   return html
-    .replace(/<style[^>]*>.*?<\/style>/gi, '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<[^>]+>/g, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -105,7 +118,7 @@ export async function sendVerificationEmail(to, code, name) {
           <p>Trucking & Delivery Platform</p>
         </div>
         <div class="content">
-          <h2>Welcome, ${name}!</h2>
+          <h2>Welcome, ${esc(name)}!</h2>
           <p>Thank you for registering with YYC Brokers. To complete your account setup, please verify your email address.</p>
 
           <p><strong>Your verification code is:</strong></p>
@@ -134,7 +147,7 @@ export async function sendVerificationEmail(to, code, name) {
  * @param {string} name - User name
  */
 export async function sendPasswordResetEmail(to, token, name) {
-  const resetUrl = `${process.env.PUBLIC_ORIGIN || 'http://localhost:3000'}/reset-password?token=${token}`;
+  const resetUrl = `${appOrigin()}/reset-password?token=${token}`;
   const subject = 'Reset your YYC Brokers password';
   const html = `
     <!DOCTYPE html>
@@ -158,7 +171,7 @@ export async function sendPasswordResetEmail(to, token, name) {
           <p>Password Reset Request</p>
         </div>
         <div class="content">
-          <h2>Hi ${name},</h2>
+          <h2>Hi ${esc(name)},</h2>
           <p>We received a request to reset your password for your YYC Brokers account.</p>
 
           <p style="text-align: center;">
@@ -192,7 +205,7 @@ export async function sendPasswordResetEmail(to, token, name) {
  * @param {string} storeName - Store name
  */
 export async function sendQuoteReadyEmail(to, shipmentId, price, storeName) {
-  const shipmentUrl = `${process.env.PUBLIC_ORIGIN || 'http://localhost:3000'}`;
+  const shipmentUrl = `${appOrigin()}/store`;
   const subject = `Quote ready for ${shipmentId}`;
   const html = `
     <!DOCTYPE html>
@@ -216,7 +229,7 @@ export async function sendQuoteReadyEmail(to, shipmentId, price, storeName) {
           <p>${shipmentId}</p>
         </div>
         <div class="content">
-          <h2>Hi ${storeName},</h2>
+          <h2>Hi ${esc(storeName)},</h2>
           <p>Your YYC Brokers quotation is ready for review.</p>
 
           <p><strong>Quote Amount:</strong></p>
@@ -271,10 +284,10 @@ export async function sendJobOfferEmail(to, shipmentId, rate, driverName, destin
           <p>${shipmentId}</p>
         </div>
         <div class="content">
-          <h2>Hi ${driverName},</h2>
+          <h2>Hi ${esc(driverName)},</h2>
           <p>You have a new job offer from YYC Brokers.</p>
 
-          <p><strong>Destination:</strong> ${destination}</p>
+          <p><strong>Destination:</strong> ${esc(destination)}</p>
 
           <p><strong>Your Rate:</strong></p>
           <div class="rate">$${rate.toFixed(2)} CAD</div>
@@ -282,7 +295,7 @@ export async function sendJobOfferEmail(to, shipmentId, rate, driverName, destin
           <p>Log in to view full details and accept this job offer.</p>
 
           <p style="text-align: center;">
-            <a href="${process.env.PUBLIC_ORIGIN || 'http://localhost:3000'}" class="button">View Job Offer</a>
+            <a href="${appOrigin()}/driver" class="button">View Job Offer</a>
           </p>
         </div>
         <div class="footer">
@@ -327,18 +340,18 @@ export async function sendDeliveryCompletedEmail(to, shipmentId, pod, storeName)
           <p>${shipmentId}</p>
         </div>
         <div class="content">
-          <h2>Hi ${storeName},</h2>
+          <h2>Hi ${esc(storeName)},</h2>
 
           <div class="success">
             <strong>Your delivery has been completed successfully!</strong>
           </div>
 
-          <p><strong>Proof of Delivery:</strong> ${pod}</p>
+          <p><strong>Proof of Delivery:</strong> ${esc(pod)}</p>
 
           <p>You can view the full delivery details and receipt in your YYC Brokers account.</p>
 
           <p style="text-align: center;">
-            <a href="${process.env.PUBLIC_ORIGIN || 'http://localhost:3000'}" class="button">View Details</a>
+            <a href="${appOrigin()}/store" class="button">View Details</a>
           </p>
         </div>
         <div class="footer">
