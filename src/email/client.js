@@ -38,6 +38,14 @@ export async function verifyConnection() {
  * @returns {Promise<Object>} Resend response
  */
 export async function sendEmail({ to, subject, html, text }) {
+  // Testing: EMAIL_REDIRECT_TO sends every email to one inbox (e.g. the Resend account owner,
+  // the only address Resend test mode delivers to). Ignored in production.
+  const redirect = process.env.NODE_ENV !== 'production' && process.env.EMAIL_REDIRECT_TO;
+  if (redirect && redirect !== to) {
+    subject = `[Test for ${to}] ${subject}`;
+    to = redirect;
+  }
+
   if (!resend) {
     console.log('[Email] Skipping email send (RESEND_API_KEY not configured)');
     console.log(`[Email] Would send to: ${to}`);
