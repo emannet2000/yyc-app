@@ -62,6 +62,13 @@ export async function sendEmail({ to, subject, html, text }) {
     return data;
   } catch (error) {
     console.error('[Email] Failed to send:', error);
+    // Resend's test mode only delivers to the account owner. Outside production, print the
+    // email so codes for other test accounts can still be read from the logs.
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[Email] Not delivered - would send to: ${to}`);
+      console.log(`[Email] Subject: ${subject}`);
+      console.log(`[Email] Body: ${text || stripHtml(html)}`);
+    }
     throw error;
   }
 }
