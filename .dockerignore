@@ -51,3 +51,6 @@ logs
 Dockerfile
 .dockerignore
 docker-compose.yml
+
+# Frontend is built inside the image (see Dockerfile)
+public/dist/

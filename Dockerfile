@@ -12,6 +12,16 @@ COPY package*.json ./
 # Install production dependencies only
 RUN npm ci --production --quiet
 
+# Frontend stage - build the React app (needs devDependencies such as vite)
+FROM node:24-alpine AS frontend
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --quiet
+COPY vite.config.js ./
+COPY client ./client
+RUN npx vite build
+
 # Production stage
 FROM node:24-alpine
 
@@ -27,6 +37,7 @@ COPY --from=build --chown=nodejs:nodejs /app/node_modules ./node_modules
 # Copy application code
 COPY --chown=nodejs:nodejs src ./src
 COPY --chown=nodejs:nodejs public ./public
+COPY --from=frontend --chown=nodejs:nodejs /app/public/dist ./public/dist
 COPY --chown=nodejs:nodejs scripts ./scripts
 COPY --chown=nodejs:nodejs package.json ./
 

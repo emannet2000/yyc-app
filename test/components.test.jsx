@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { AppProvider } from '../client/src/store/AppContext';
+import { AppProvider, useApp } from '../client/src/store/AppContext';
 import Login from '../client/src/pages/Login';
 import Register from '../client/src/pages/Register';
 
@@ -152,11 +152,12 @@ describe('Register Component', () => {
     await user.type(screen.getByLabelText(/email/i), 'store@example.com');
     await user.type(screen.getByLabelText(/phone/i), '123-456-7890');
     await user.type(screen.getByLabelText(/^password/i), 'password123456');
-    await user.type(screen.getByLabelText(/confirm password/i), 'different');
+    await user.type(screen.getByLabelText(/confirm password/i), 'different-password');
     await user.type(screen.getByLabelText(/store delivery address/i), '123 Main St');
     await user.type(screen.getByLabelText(/receiving contact/i), 'John Doe');
 
-    await user.click(screen.getByRole('button', { name: /create account/i }));
+    // Submit the form directly so the app's own validation runs (native minLength/required checks would block a click).
+    fireEvent.submit(screen.getByRole('button', { name: /create account/i }).closest('form'));
 
     await waitFor(() => {
       expect(screen.getByText(/passwords do not match/i)).toBeInTheDocument();
@@ -184,7 +185,8 @@ describe('Register Component', () => {
     await user.type(screen.getByLabelText(/store delivery address/i), '123 Main St');
     await user.type(screen.getByLabelText(/receiving contact/i), 'John Doe');
 
-    await user.click(screen.getByRole('button', { name: /create account/i }));
+    // Submit the form directly so the app's own validation runs (native minLength/required checks would block a click).
+    fireEvent.submit(screen.getByRole('button', { name: /create account/i }).closest('form'));
 
     await waitFor(() => {
       expect(screen.getByText(/password must be at least 12 characters/i)).toBeInTheDocument();
@@ -195,7 +197,7 @@ describe('Register Component', () => {
 describe('AppContext', () => {
   it('provides initial state', () => {
     const TestComponent = () => {
-      const { state } = require('../client/src/store/AppContext').useApp();
+      const { state } = useApp();
       return (
         <div>
           <span data-testid="auth">{String(state.isAuthenticated)}</span>

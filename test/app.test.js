@@ -28,7 +28,7 @@ test('PostgreSQL and Redis application integration', { skip: !enabled }, async (
     const shipment = await store.createShipment(customer, { pickup: 'Warehouse A, Calgary', destination: 'Store B, Calgary', stops: ['Stop A, Calgary | Receiver A | 13:00–16:00'], date: new Date(Date.now()+7*86400000).toISOString().slice(0,10), window: '13:00–16:00', goods: 'Palletized supplies', pallets: 2, kg: 500, type: 'Box truck', unloading: 'Dock', pickupContact: 'Dispatch', receivingContact: 'Store contact', hours: '09:00–17:00' });
     shipmentIds.push(shipment.id);
     let shipmentId = shipment.id;
-    current = await store.act(broker, shipmentId, 'quote', { version: shipment.version, price: 500, rate: 350 });
+    let current = await store.act(broker, shipmentId, 'quote', { version: shipment.version, price: 500, rate: 350 });
     current = await store.act(customer, shipmentId, 'acceptQuote', { version: current.version });
     current = await store.act(driver, shipmentId, 'bid', { version: current.version, rate: 325, note: 'Available for the route' });
     assert.equal(current.bids[0].rate, 325);

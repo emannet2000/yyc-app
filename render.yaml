@@ -7,11 +7,12 @@ services:
   - type: web
     name: yyc-brokers
     runtime: docker
-    repo: https://github.com/YOUR_USERNAME/yyc-app # UPDATE THIS
+    repo: https://github.com/emannet2000/yyc-app
     branch: main
     dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
-    autoDeploy: true
+    # Deploys are triggered by GitHub Actions only after tests pass (.github/workflows/ci.yml).
+    autoDeploy: false
 
     # Instance configuration
     plan: starter # Options: starter ($7), standard ($25), pro ($85)
