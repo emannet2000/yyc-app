@@ -10,3 +10,25 @@ npm-debug.log*
 backups/
 *.bak
 *.dump
+
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local databases
+*.sqlite
+*.sqlite3
+
+# Build artifacts
+dist/
+client/dist/
+
+# Logs
+*.log

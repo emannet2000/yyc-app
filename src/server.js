@@ -1,3 +1,7 @@
+// Initialize Sentry first for error tracking
+import { initSentry, captureException, setUser, clearUser } from './monitoring/sentry.js';
+initSentry();
+
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
@@ -1876,11 +1880,12 @@ export function createApp({ secure = process.env.NODE_ENV === 'production', publ
       // Static file serving
       check(['GET', 'HEAD'].includes(req.method), 405, 'Method not allowed.');
 
-      // Portal entry points share the app shell. Keep the URL slash-free so
-      // relative assets resolve from the same directory.
-      const portalPaths = ['/owner', '/store', '/driver', '/broker', '/demo/owner', '/demo/store', '/demo/driver', '/demo/broker'];
+      // React SPA routing: serve React app for main routes
+      // Demo routes still use old vanilla JS app for comparison
+      const demoAppPaths = ['/demo', '/demo/owner', '/demo/store', '/demo/driver', '/demo/broker'];
       const trimmedPath = path.replace(/\/+$/, '');
-      if (path !== trimmedPath && portalPaths.includes(trimmedPath)) {
+
+      if (path !== trimmedPath && (trimmedPath === '/' || demoAppPaths.includes(trimmedPath))) {
         res.writeHead(302, { Location: trimmedPath });
         return res.end();
       }
@@ -1889,13 +1894,22 @@ export function createApp({ secure = process.env.NODE_ENV === 'production', publ
       try {
         let decoded = decodeURIComponent(path);
         check(!decoded.includes('\0') && !decoded.includes('\\'), 404, 'Not found.');
+
+        // Check if this is a demo path or asset request
+        const isDemoPath = decoded.startsWith('/demo');
+        const hasExtension = extname(decoded) !== '';
+
         filePath = resolve(
           publicDir,
           '.' + (
-            decoded === '/' ? '/index.html' :
+            // Demo app routes (old vanilla JS for comparison)
             decoded === '/demo' || decoded === '/demo/' ? '/demo/index.html' :
-            portalPaths.includes(decoded) ? (decoded.startsWith('/demo/') ? '/demo/index.html' : '/index.html') :
-            decoded === '/reset-password' ? '/index.html' :
+            demoAppPaths.includes(decoded) ? '/demo/index.html' :
+            // Static assets from /assets or /dist/assets
+            hasExtension ? decoded :
+            // React SPA - serve index.html for all other routes (client-side routing)
+            !isDemoPath ? '/dist/index.html' :
+            // Default
             decoded
           )
         );
