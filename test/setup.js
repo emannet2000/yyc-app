@@ -1,19 +1,10 @@
 import '@testing-library/jest-dom';
+import { afterEach } from 'vitest';
 
-// Mock localStorage for tests
-global.localStorage = {
-  getItem: (key) => global.localStorage[key] || null,
-  setItem: (key, value) => { global.localStorage[key] = value; },
-  removeItem: (key) => { delete global.localStorage[key]; },
-  clear: () => {
-    Object.keys(global.localStorage).forEach(key => {
-      if (typeof global.localStorage[key] !== 'function') {
-        delete global.localStorage[key];
-      }
-    });
-  },
-};
-
-// Mock window.location.hash
-delete window.location;
-window.location = { hash: '' };
+// happy-dom provides real localStorage and location; reset them between tests
+// instead of replacing them (they are getter-only on the window).
+afterEach(() => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.clear();
+  window.location.hash = '';
+});

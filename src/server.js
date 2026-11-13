@@ -1920,6 +1920,15 @@ export function createApp({ secure = process.env.NODE_ENV === 'production', publ
 
       check(filePath.startsWith(publicDir + sep), 404, 'Not found.');
 
+      // Vite emits hashed bundles to public/dist/assets but index.html references
+      // them as /assets/*. Prefer the build output, fall back to public/assets.
+      if (/^\/assets\//.test(path)) {
+        const distFile = resolve(publicDir, 'dist', '.' + filePath.slice(publicDir.length));
+        if (distFile.startsWith(publicDir + sep) && await stat(distFile).then(s => s.isFile(), () => false)) {
+          filePath = distFile;
+        }
+      }
+
       let types = {
         '.html': 'text/html; charset=utf-8',
         '.js': 'text/javascript; charset=utf-8',

@@ -7,6 +7,8 @@ export default defineConfig({
     globals: true,
     environment: 'happy-dom',
     setupFiles: './test/setup.js',
+    // Vitest owns the frontend tests. Files importing 'node:test' run with `npm run test:node`.
+    include: ['test/api.test.js', 'test/**/*.test.jsx'],
     coverage: {
       reporter: ['text', 'json', 'html'],
       exclude: [
