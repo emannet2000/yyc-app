@@ -27,6 +27,14 @@ import { generateInvoice } from './invoices/generator.js';
 
 const { AppError, check } = store;
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), '../public');
+// Testing only: SKIP_EMAIL_VERIFICATION=true lets accounts sign in without an email code.
+// Never honoured in production.
+const skipEmailVerification = () => process.env.NODE_ENV !== 'production' && process.env.SKIP_EMAIL_VERIFICATION === 'true';
+if (process.env.SKIP_EMAIL_VERIFICATION === 'true') {
+  console.warn(process.env.NODE_ENV === 'production'
+    ? '[Auth] SKIP_EMAIL_VERIFICATION is ignored in production.'
+    : '[Auth] SKIP_EMAIL_VERIFICATION is on: new accounts are marked verified without an email code.');
+}
 
 
 const adminMfaRequired = u => u.role === 'admin' && !u.mfa_enabled && process.env.ADMIN_MFA_OPTIONAL !== 'true';
@@ -423,6 +431,18 @@ export function createApp({ secure = process.env.NODE_ENV === 'production', publ
           // Send verification email for non-admin users. The account already exists, so a mail
           // failure must not look like a failed signup; the user can request a new code.
           let emailSent = true;
+          if (u.role !== 'admin' && skipEmailVerification()) {
+            await store.verifyEmail(u.email);
+            u = { ...u, email_verified: true };
+            return json(res, 201, {
+              user: u,
+              emailSent: false,
+              verificationSkipped: true,
+              message: u.role === 'driver'
+                ? 'Account created. You can log in now. YYC approval is still required before taking jobs.'
+                : 'Account created. You can log in now.'
+            });
+          }
           if (u.role !== 'admin') {
             try {
               const code = crypto.randomInt(100000, 1000000).toString();
@@ -459,6 +479,10 @@ export function createApp({ secure = process.env.NODE_ENV === 'production', publ
           catch (error) { if (error instanceof AppError && error.status === 401) await recordFailure(); throw error; }
 
           // Check email verification (except for admin accounts)
+          if (u.role !== 'admin' && !u.email_verified && skipEmailVerification()) {
+            await store.verifyEmail(u.email);
+            u.email_verified = true;
+          }
           if (u.role !== 'admin' && !u.email_verified) {
             return json(res, 403, { error: 'Please verify your email address before logging in. Check your inbox for the verification code.' });
           }

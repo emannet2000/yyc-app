@@ -94,8 +94,12 @@ export default function Register() {
 
       const response = await api.register(userData);
 
-      // For driver and store, email verification is required
-      if (role !== 'admin') {
+      if (response.verificationSkipped) {
+        // Testing mode (SKIP_EMAIL_VERIFICATION): no code needed, go straight to login.
+        window.location.hash = '/login';
+        alert(response.message);
+      } else if (role !== 'admin') {
+        // For driver and store, email verification is required
         setVerificationEmail(formData.email);
         setStep(3);
       } else {
